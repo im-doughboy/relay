@@ -1,0 +1,91 @@
+# Builds Relay for Windows on GitHub's machines, the same way as
+# packaging/package-windows.sh does on your own computer (MSYS2 UCRT64).
+#
+# - Every push to main and every pull request: build, run the tests, and keep
+#   the installer and the zip with the run (Actions → the run → Artifacts).
+# - A version tag (git tag v0.2.0 && git push origin v0.2.0): the same, then a
+#   GitHub Release with the installer and the zip attached. The tag must match
+#   the version in CMakeLists.txt.
+# - Or start it by hand: Actions → Windows build → Run workflow.
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore: ['README.md', '**/*.md']
+  pull_request:
+    paths-ignore: ['README.md', '**/*.md']
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older build pointless.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # creating the release on a version tag
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: zip
+          pacboy: >-
+            toolchain:p cmake:p ninja:p pkgconf:p
+            qt6-base:p qt6-declarative:p qt6-tools:p
+            mpv:p zlib:p nsis:p
+
+      - name: Version
+        id: version
+        run: |
+          VERSION=$(sed -n 's/^project(Relay VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Relay $VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$VERSION" ]]; then
+            echo "::error::The tag ${GITHUB_REF#refs/tags/} doesn't match the version in CMakeLists.txt ($VERSION)."
+            exit 1
+          fi
+
+      - name: Build and run the tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cmake -S . -B build-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DRELAY_BUILD_TESTS=ON
+          cmake --build build-tests
+          ctest --test-dir build-tests --output-on-failure --timeout 300
+
+      - name: Package (zip and installer)
+        run: ./packaging/package-windows.sh
+
+      - name: Keep the installer and the zip with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Relay-${{ steps.version.outputs.version }}-windows
+          path: |
+            dist/Relay-*-setup.exe
+            dist/Relay-*-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish the release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Relay ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/Relay-*-setup.exe
+            dist/Relay-*-windows-x64.zip
