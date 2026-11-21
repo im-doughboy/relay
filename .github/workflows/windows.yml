@@ -65,7 +65,11 @@ jobs:
         run: |
           cmake -S . -B build-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DRELAY_BUILD_TESTS=ON
           cmake --build build-tests
-          ctest --test-dir build-tests --output-on-failure --timeout 300
+          # On a failure, run the tests again directly so every message shows.
+          ctest --test-dir build-tests --output-on-failure --timeout 300 || {
+            (cd build-tests && ./test_sources.exe -o -,txt 2>&1 | grep -v '^PASS' ; ./test_epg.exe 2>&1 | grep -v '^PASS')
+            exit 1
+          }
 
       - name: Package (zip and installer)
         run: ./packaging/package-windows.sh

@@ -1898,9 +1898,11 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(got.count(), 1, 10000);
         QCOMPARE(up.state(), QString("installing"));
         const QString path = got.first().first().toString();
-        QFile f(path);
-        QVERIFY(f.open(QIODevice::ReadOnly));
-        QCOMPARE(f.readAll(), gh.file);
+        {
+            QFile f(path);   // closed again: Windows can't delete an open file
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QCOMPARE(f.readAll(), gh.file);
+        }
         // The token went to the API, but not to the other host that had the file.
         bool assetWithToken = false, fileWithoutToken = false;
         for (const QByteArray &r : gh.requests) {
