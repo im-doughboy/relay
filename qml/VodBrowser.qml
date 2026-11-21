@@ -1,0 +1,539 @@
+import QtQuick
+import QtQuick.Controls.Basic
+import Relay.Core
+
+// Movies and series. Tabs on top, categories on the left, posters on the
+// right. Type to search, Tab switches Movies/Series, O changes the order,
+// F favorites, Enter opens details, Esc goes back to TV.
+FocusScope {
+    id: root
+    property bool opened: false
+    signal closed()
+    signal message(string text)
+    signal playRequested(var descriptor)
+    signal recordingsRequested()
+    signal pinRequested(string reason, var onOk)
+
+    readonly property int columns: Math.max(3, Math.floor(grid.width / 190))
+
+    function open(section) {
+        if (section !== undefined) Vod.section = section
+        opened = true
+        Vod.ensureLoaded()
+        syncCategory()
+        grid.forceActiveFocus()
+    }
+    // Straight to one title (from search, or back from playback).
+    function openDetails(kind, id, preview) {
+        if (!opened) {
+            Vod.section = kind === "movie" ? 0 : 1
+            opened = true
+            Vod.ensureLoaded()
+            syncCategory()
+        }
+        details.open(kind, id, preview || ({}))
+    }
+    function close() {
+        if (!opened) return
+        details.close()
+        opened = false
+        closed()
+    }
+    function syncCategory() {
+        const list = Vod.categories
+        for (let i = 0; i < list.length; ++i)
+            if (list[i].id === Vod.category) { categories.currentIndex = i; return }
+        categories.currentIndex = -1
+    }
+    function selectCategory(i) {
+        const c = Vod.categories[i]
+        if (!c) return
+        if (c.id.startsWith("c:") && Parental.categoryBlocked(Vod.section, c.id.substring(2))) {
+            pinRequested(qsTr("\"%1\" is locked").arg(c.label), () => root.selectCategory(i))
+            return
+        }
+        categories.currentIndex = i
+        Vod.category = c.id
+    }
+    // K on a category: lock / unlock it (needs the PIN).
+    function toggleCategoryLock(i) {
+        const c = Vod.categories[i]
+        if (!c || !c.id.startsWith("c:")) { message(qsTr("Only categories from your provider can be locked")); return }
+        if (!Parental.hasPin) { message(qsTr("Set a parental PIN in Settings (S) first")); return }
+        const doIt = () => {
+            const locked = Parental.toggleCategoryLock(Vod.section, c.id.substring(2))
+            message(locked ? qsTr("Category locked") : qsTr("Category unlocked"))
+        }
+        if (Parental.unlocked) doIt()
+        else pinRequested(qsTr("Enter the PIN to change locks"), doIt)
+    }
+    // Tab: Movies → Series → Recordings
+    function switchSection() {
+        if (Vod.section === 0) { Vod.section = 1; syncCategory() }
+        else recordingsRequested()
+    }
+    function cycleSort() {
+        Vod.sort = (Vod.sort + 1) % Vod.sortNames.length
+        message(qsTr("Order: %1").arg(Vod.sortNames[Vod.sort]))
+    }
+    function openRow(i) {
+        const r = Vod.rowAt(i)
+        if (r.id) details.open(r.kind, r.id, r)
+    }
+    function toggleFavorite(i) {
+        const r = Vod.rowAt(i)
+        if (!r.id) return
+        const fav = Vod.toggleFavorite(r.kind, r.id)
+        message(fav ? qsTr("Added to favorites") : qsTr("Removed from favorites"))
+    }
+    function forget(i) {
+        const r = Vod.rowAt(i)
+        if (!r.id || Vod.category !== "continue") return
+        Vod.forgetProgress(r.kind === "series" ? "series:" + r.id : r.progressKey)
+        message(qsTr("Removed from Continue watching"))
+    }
+
+    visible: opened
+    Keys.onEscapePressed: close()
+
+    Connections {
+        target: Vod
+        function onCategoriesChanged() { root.syncCategory() }
+        function onCategoryChanged() { root.syncCategory() }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.background
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => w.accepted = true }
+    }
+
+    // ---- Header ---------------------------------------------------------------
+    Item {
+        id: header
+        width: parent.width
+        height: 84
+
+        Row {
+            id: tabs
+            x: 32
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+            Repeater {
+                model: [
+                    { label: qsTr("Movies"), count: Vod.movieCount },
+                    { label: qsTr("Series"), count: Vod.seriesCount },
+                    { label: qsTr("Recordings"), count: -1 },
+                ]
+                delegate: Rectangle {
+                    readonly property bool current: Vod.section === index
+                    height: 44
+                    width: tabText.implicitWidth + 36
+                    radius: 22
+                    color: current ? Theme.accent : (tabMouse.containsMouse ? Theme.focus : Theme.raised)
+                    Text {
+                        id: tabText
+                        anchors.centerIn: parent
+                        text: modelData.label + (modelData.count >= 0 && Vod.loaded ? "  " + Number(modelData.count).toLocaleString(Qt.locale(), "f", 0)
+                                                 : modelData.count < 0 && Schedule.recordingCount > 0 ? "  ●" : "")
+                        color: parent.current ? Theme.accentText : Theme.text
+                        font.pixelSize: Theme.fontBody
+                        font.weight: Font.DemiBold
+                    }
+                    MouseArea {
+                        id: tabMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: {
+                            if (index === 2) { root.recordingsRequested(); return }
+                            Vod.section = index; root.syncCategory(); grid.forceActiveFocus()
+                        }
+                    }
+                }
+            }
+        }
+
+        Text {
+            x: tabs.x + tabs.width + 28
+            anchors.verticalCenter: parent.verticalCenter
+            visible: x + implicitWidth < headerRight.x - 20
+            text: qsTr("Tab: next tab   ·   O: order   ·   F: favorite   ·   Esc: back to TV")
+            color: Theme.textMuted
+            font.pixelSize: Theme.fontSmall
+        }
+
+        CloseButton {
+            id: closeButton
+            anchors.right: parent.right
+            anchors.rightMargin: 32
+            anchors.verticalCenter: parent.verticalCenter
+            onClicked: root.close()
+        }
+        Row {
+            id: headerRight
+            anchors.right: closeButton.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+
+            Rectangle {   // order
+                height: 44
+                width: sortText.implicitWidth + 32
+                radius: Theme.radius
+                color: sortMouse.containsMouse ? Theme.focus : Theme.raised
+                border.width: 1
+                border.color: Theme.border
+                Text {
+                    id: sortText
+                    anchors.centerIn: parent
+                    text: "⇅  " + Vod.sortNames[Vod.sort]
+                    color: Theme.textSecondary
+                    font.pixelSize: Theme.fontSmall + 1
+                }
+                MouseArea {
+                    id: sortMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: sortMenu.popup()
+                }
+                RelayMenu {
+                    id: sortMenu
+                    Repeater {
+                        model: Vod.sortNames
+                        delegate: MenuItem {
+                            text: (index === Vod.sort ? "✓  " : "     ") + modelData
+                            onTriggered: { Vod.sort = index; grid.forceActiveFocus() }
+                        }
+                    }
+                }
+            }
+
+            TextField {
+                id: searchField
+                width: Math.min(360, root.width * 0.28)
+                height: 44
+                placeholderText: Vod.section === 0 ? qsTr("Search movies") : qsTr("Search series")
+                placeholderTextColor: Theme.textMuted
+                color: Theme.text
+                font.pixelSize: Theme.fontBody
+                leftPadding: 40
+                selectByMouse: true
+                selectionColor: Theme.accent
+                selectedTextColor: Theme.accentText
+                background: Rectangle {
+                    radius: Theme.radius
+                    color: Theme.raised
+                    border.width: searchField.activeFocus ? 2 : 1
+                    border.color: searchField.activeFocus ? Theme.accent : Theme.border
+                }
+                Text {
+                    x: 13
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "⌕"
+                    color: Theme.textMuted
+                    font.pixelSize: 20
+                }
+                onTextChanged: filterTimer.restart()
+                Keys.onDownPressed: grid.forceActiveFocus()
+                Keys.onReturnPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
+                Keys.onEnterPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
+                Keys.onEscapePressed: {
+                    if (text.length) text = ""
+                    else grid.forceActiveFocus()
+                }
+                Keys.onTabPressed: { root.switchSection(); grid.forceActiveFocus() }
+            }
+        }
+        Timer { id: filterTimer; interval: 200; onTriggered: Vod.filter = searchField.text }
+    }
+
+    // ---- Categories -----------------------------------------------------------
+    ListView {
+        id: categories
+        anchors.top: header.bottom
+        anchors.bottom: parent.bottom
+        x: 16
+        width: 280
+        clip: true
+        model: Vod.categories
+        keyNavigationEnabled: false
+        highlightMoveDuration: 0
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Keys.onPressed: (e) => {
+            switch (e.key) {
+            case Qt.Key_Up: if (currentIndex > 0) root.selectCategory(currentIndex - 1); break
+            case Qt.Key_Down: if (currentIndex < count - 1) root.selectCategory(currentIndex + 1); break
+            case Qt.Key_PageUp: root.selectCategory(Math.max(0, currentIndex - 10)); break
+            case Qt.Key_PageDown: root.selectCategory(Math.min(count - 1, currentIndex + 10)); break
+            case Qt.Key_Home: root.selectCategory(0); break
+            case Qt.Key_End: root.selectCategory(count - 1); break
+            case Qt.Key_Right:
+            case Qt.Key_Return:
+            case Qt.Key_Enter:
+                if (grid.count) grid.forceActiveFocus(); break
+            case Qt.Key_Tab: root.switchSection(); break
+            case Qt.Key_O: root.cycleSort(); break
+            case Qt.Key_K: root.toggleCategoryLock(currentIndex); break
+            case Qt.Key_Escape:
+            case Qt.Key_Backspace: root.close(); break
+            default:
+                if (e.text.length && e.text.charCodeAt(0) > 32) {
+                    searchField.forceActiveFocus()
+                    searchField.insert(searchField.cursorPosition, e.text)
+                    break
+                }
+                return
+            }
+            positionViewAtIndex(currentIndex, ListView.Contain)
+            e.accepted = true
+        }
+
+        delegate: Rectangle {
+            readonly property bool current: ListView.isCurrentItem
+            width: categories.width - 12
+            height: 46
+            radius: 6
+            color: current ? (categories.activeFocus ? Theme.focus : Theme.raised) : "transparent"
+            border.width: current && categories.activeFocus ? 2 : 0
+            border.color: Theme.accent
+            Text {
+                x: 14
+                width: parent.width - 80
+                anchors.verticalCenter: parent.verticalCenter
+                text: ((Parental.revision, modelData.id.startsWith("c:") && Parental.isCategoryLocked(Vod.section, modelData.id.substring(2)))
+                       ? "🔒 " : "") + modelData.label
+                color: parent.current ? Theme.text : Theme.textSecondary
+                font.pixelSize: Theme.fontBody - 1
+                font.weight: parent.current ? Font.DemiBold : Font.Normal
+                elide: Text.ElideRight
+            }
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                text: Number(modelData.count).toLocaleString(Qt.locale(), "f", 0)
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSmall
+            }
+            MouseArea {
+                anchors.fill: parent
+                onClicked: { root.selectCategory(index); categories.forceActiveFocus() }
+            }
+        }
+    }
+
+    // ---- Posters --------------------------------------------------------------
+    GridView {
+        id: grid
+        anchors.top: header.bottom
+        anchors.bottom: parent.bottom
+        anchors.left: categories.right
+        anchors.leftMargin: 16
+        anchors.right: parent.right
+        anchors.rightMargin: 16
+        clip: true
+        model: Vod.items
+        cellWidth: Math.floor(width / root.columns)
+        cellHeight: Math.round((cellWidth - 20) * 1.5) + 66
+        keyNavigationEnabled: false
+        highlightMoveDuration: 0
+        cacheBuffer: cellHeight * 2
+        boundsBehavior: Flickable.StopAtBounds
+        topMargin: 8
+        bottomMargin: 24
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        // After the list changes (new category, search, section) start at the first poster.
+        onCountChanged: if (count > 0 && (currentIndex < 0 || currentIndex >= count)) currentIndex = 0
+
+        function move(to) {
+            if (to < 0 || to >= count) return
+            currentIndex = to
+            positionViewAtIndex(to, GridView.Contain)
+        }
+
+        Keys.onPressed: (e) => {
+            const cols = root.columns
+            if (currentIndex < 0 && count > 0) currentIndex = 0
+            const i = currentIndex
+            switch (e.key) {
+            case Qt.Key_Left:
+                if (i % cols === 0 || i < 0) categories.forceActiveFocus()
+                else move(i - 1)
+                break
+            case Qt.Key_Right:
+                if ((i + 1) % cols !== 0) move(i + 1)
+                break
+            case Qt.Key_Up:
+                if (i - cols >= 0) move(i - cols)
+                else searchField.forceActiveFocus()
+                break
+            case Qt.Key_Down:
+                if (i + cols < count) move(i + cols)
+                else if (Math.floor(i / cols) < Math.floor((count - 1) / cols)) move(count - 1)
+                break
+            case Qt.Key_PageUp: move(Math.max(i % cols, i - cols * 3)); break
+            case Qt.Key_PageDown: move(Math.min(count - 1, i + cols * 3)); break
+            case Qt.Key_Home: move(0); break
+            case Qt.Key_End: move(count - 1); break
+            case Qt.Key_Return:
+            case Qt.Key_Enter: root.openRow(i); break
+            case Qt.Key_F: root.toggleFavorite(i); break
+            case Qt.Key_Delete: root.forget(i); break
+            case Qt.Key_Tab: root.switchSection(); break
+            case Qt.Key_O: root.cycleSort(); break
+            case Qt.Key_Escape:
+            case Qt.Key_Backspace: root.close(); break
+            default:
+                if (e.text.length && e.text.charCodeAt(0) > 32 && !(e.modifiers & Qt.ControlModifier)) {
+                    searchField.forceActiveFocus()
+                    searchField.insert(searchField.cursorPosition, e.text)
+                    break
+                }
+                return
+            }
+            e.accepted = true
+        }
+
+        delegate: Item {
+            width: grid.cellWidth
+            height: grid.cellHeight
+            readonly property bool sel: GridView.isCurrentItem && grid.activeFocus
+
+            Poster {
+                id: poster
+                x: 10
+                y: 8
+                width: parent.width - 20
+                height: Math.round(width * 1.5)
+                source: model.poster
+                title: model.title
+                progress: model.progress
+                watched: model.watched
+                favorite: model.favorite
+                selected: parent.sel
+            }
+            Text {
+                anchors.top: poster.bottom
+                anchors.topMargin: 10
+                x: 12
+                width: parent.width - 24
+                text: model.title
+                color: parent.sel ? Theme.text : Theme.textSecondary
+                font.pixelSize: Theme.fontSmall + 1
+                font.weight: parent.sel ? Font.DemiBold : Font.Normal
+                elide: Text.ElideRight
+            }
+            Text {
+                anchors.top: poster.bottom
+                anchors.topMargin: 31
+                x: 12
+                width: parent.width - 24
+                text: model.subtitle || [model.year, model.rating > 0 ? "★ " + Number(model.rating).toFixed(1) : ""]
+                                         .filter(s => s).join("   ")
+                color: model.subtitle ? Theme.accent : Theme.textMuted
+                font.pixelSize: Theme.fontSmall
+                elide: Text.ElideRight
+            }
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: (e) => {
+                    grid.currentIndex = index
+                    grid.forceActiveFocus()
+                    if (e.button === Qt.RightButton) { itemMenu.favorite = model.favorite; itemMenu.popup() }
+                }
+                onDoubleClicked: root.openRow(index)
+            }
+        }
+    }
+
+    // Right-click on a poster
+    RelayMenu {
+        id: itemMenu
+        property bool favorite: false
+        MenuItem { text: qsTr("Open"); onTriggered: root.openRow(grid.currentIndex) }
+        MenuItem {
+            text: itemMenu.favorite ? qsTr("Remove from favorites") : qsTr("Add to favorites")
+            onTriggered: root.toggleFavorite(grid.currentIndex)
+        }
+        MenuItem {
+            enabled: Vod.category === "continue"
+            height: enabled ? implicitHeight : 0
+            visible: enabled
+            text: qsTr("Remove from Continue watching")
+            onTriggered: root.forget(grid.currentIndex)
+        }
+    }
+
+    // ---- Loading / empty / error ----------------------------------------------
+    Column {
+        anchors.centerIn: grid
+        spacing: 14
+        visible: Vod.loading && grid.count === 0
+        BusyIndicator {
+            anchors.horizontalCenter: parent.horizontalCenter
+            running: parent.visible
+            palette.dark: Theme.accent
+        }
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: Vod.status
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontBody
+        }
+    }
+    Column {
+        anchors.centerIn: grid
+        width: Math.min(520, grid.width - 40)
+        spacing: 16
+        visible: !Vod.loading && grid.count === 0
+        Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            text: !Vod.available ? qsTr("This playlist has no movies or series.")
+                  : Vod.error ? Vod.error
+                  : Vod.filter ? qsTr("Nothing found for \"%1\"").arg(Vod.filter)
+                  : Vod.category === "continue" ? qsTr("Nothing in progress. Movies and episodes you start show up here.")
+                  : Vod.category === "favorites" ? qsTr("No favorites yet. Press F on a poster to add one.")
+                  : qsTr("Nothing here.")
+            color: Vod.error ? Theme.danger : Theme.textSecondary
+            font.pixelSize: Theme.fontBody
+        }
+        ActionButton {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: Vod.error.length > 0
+            text: qsTr("Try again")
+            onClicked: Vod.reload()
+        }
+    }
+    // Background refresh of an already-shown list
+    Rectangle {
+        visible: Vod.loading && grid.count > 0
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 24
+        height: 36
+        width: refreshText.implicitWidth + 28
+        radius: 18
+        color: Theme.panel
+        Text {
+            id: refreshText
+            anchors.centerIn: parent
+            text: Vod.status || qsTr("Updating…")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSmall
+        }
+    }
+
+    VodDetails {
+        id: details
+        anchors.fill: parent
+        onClosed: grid.forceActiveFocus()
+        onPlay: (d) => root.playRequested(d)
+        onMessage: (text) => root.message(text)
+    }
+}

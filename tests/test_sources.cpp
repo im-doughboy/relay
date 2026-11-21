@@ -1,0 +1,1924 @@
+#include "app/AppSettings.h"
+#include "app/Backup.h"
+#include "app/Log.h"
+#include "app/UserLibrary.h"
+#include "app/Parental.h"
+#include "app/OtherPlaylists.h"
+#include "app/Session.h"
+#include "models/ChannelModel.h"
+#include "player/PlayerController.h"
+#include "sources/M3uParser.h"
+#include "sources/XtreamParser.h"
+#include "sources/PortalClient.h"
+#include "sources/Catchup.h"
+#include "vod/Tmdb.h"
+#include "app/Trakt.h"
+#include "cast/CastDevices.h"
+#include "cast/CastRelay.h"
+#include "cast/CastService.h"
+#include "cast/TsSegmenter.h"
+#include "vod/VodParser.h"
+#include "epg/EpgService.h"
+#include "vod/VodParser.h"
+#include "sources/Catchup.h"
+#include "sources/CatchupService.h"
+#include "record/HlsPlaylist.h"
+#include "record/Recorder.h"
+#include "record/ScheduleService.h"
+
+#include <QNetworkAccessManager>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include "vod/VodService.h"
+
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QtTest>
+
+// Tiny HTTP server for recording tests: /live.ts streams 64 KB chunks every
+// 50 ms and never ends; /hls.m3u8 is a live playlist whose segments are
+// /seg<N>.ts with 1000 bytes each.
+class StreamServer : public QTcpServer
+{
+public:
+    int hlsSequence = 10;
+    int requests = 0;
+    StreamServer() { listen(QHostAddress::LocalHost); }
+    QString base() const { return QStringLiteral("http://127.0.0.1:%1").arg(serverPort()); }
+protected:
+    void incomingConnection(qintptr fd) override
+    {
+        auto *sock = new QTcpSocket(this);
+        sock->setSocketDescriptor(fd);
+        connect(sock, &QTcpSocket::readyRead, sock, [this, sock] {
+            const QByteArray req = sock->readAll();
+            const QByteArray path = req.split(' ').value(1);
+            ++requests;
+            if (path == "/live.ts") {
+                sock->write("HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\n\r\n");
+                auto *t = new QTimer(sock);
+                connect(t, &QTimer::timeout, sock, [sock] { sock->write(QByteArray(65536, 'G')); });
+                t->start(50);
+                return;
+            }
+            QByteArray body;
+            if (path == "/hls.m3u8") {
+                body = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:" + QByteArray::number(hlsSequence) + "\n";
+                for (int i = 0; i < 5; ++i)
+                    body += "#EXTINF:1.0,\nseg" + QByteArray::number(hlsSequence + i) + ".ts\n";
+                ++hlsSequence;
+            } else if (path.startsWith("/seg")) {
+                body = QByteArray(1000, 'S');
+            } else {
+                sock->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                sock->disconnectFromHost();
+                return;
+            }
+            sock->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size())
+                        + "\r\nConnection: close\r\n\r\n" + body);
+            sock->disconnectFromHost();
+        });
+    }
+};
+
+// JSON written with ' for " (moc trips over raw string literals).
+static QByteArray js(const char *text)
+{
+    QByteArray b(text);
+    b.replace('\'', '"');
+    return b;
+}
+
+class TestSources : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void initTestCase()
+    {
+        QCoreApplication::setOrganizationName(QStringLiteral("RelayTests"));
+        QCoreApplication::setApplicationName(QStringLiteral("RelayTests"));
+        QSettings().clear();
+    }
+
+    // ---- M3U ----
+
+    void m3u_basic()
+    {
+        const QByteArray data =
+            "\xEF\xBB\xBF#EXTM3U url-tvg=\"http://epg.example/guide.xml\"\r\n"
+            "#EXTINF:-1 tvg-id=\"news.us\" tvg-name=\"News HD\" tvg-logo=\"http://l/n.png\" "
+            "group-title=\"News, Weather\",News HD\r\n"
+            "http://s/1.ts\r\n"
+            "#EXTINF:-1 tvg-chno=\"42\" group-title=\"Sports\",Sports One\n"
+            "#EXTVLCOPT:http-user-agent=CustomUA/1.0\n"
+            "#EXTVLCOPT:http-referrer=http://ref.example/\n"
+            "http://s/2.m3u8\n";
+        const PlaylistResult r = M3uParser::parse(data);
+        QVERIFY(r.error.isEmpty());
+        QCOMPARE(r.epgUrl, QStringLiteral("http://epg.example/guide.xml"));
+        QCOMPARE(r.channels.size(), 2);
+
+        const Channel &a = r.channels[0];
+        QCOMPARE(a.name, QStringLiteral("News HD"));
+        QCOMPARE(a.group, QStringLiteral("News, Weather"));   // comma inside quotes
+        QCOMPARE(a.tvgId, QStringLiteral("news.us"));
+        QCOMPARE(a.logo, QStringLiteral("http://l/n.png"));
+        QCOMPARE(a.url, QStringLiteral("http://s/1.ts"));
+        QCOMPARE(a.number, 1);
+
+        const Channel &b = r.channels[1];
+        QCOMPARE(b.number, 42);
+        QCOMPARE(b.userAgent, QStringLiteral("CustomUA/1.0"));
+        QCOMPARE(b.referrer, QStringLiteral("http://ref.example/"));
+    }
+
+    void m3u_extgrp_and_missing_name()
+    {
+        const QByteArray data =
+            "#EXTM3U\n"
+            "#EXTINF:0 tvg-name=\"From Attr\",\n"
+            "#EXTGRP:Movies\n"
+            "http://s/movie.ts\n"
+            "http://s/bare/stream.m3u8\n";
+        const PlaylistResult r = M3uParser::parse(data);
+        QCOMPARE(r.channels.size(), 2);
+        QCOMPARE(r.channels[0].name, QStringLiteral("From Attr"));
+        QCOMPARE(r.channels[0].group, QStringLiteral("Movies"));
+        QCOMPARE(r.channels[1].name, QStringLiteral("stream.m3u8"));
+        QCOMPARE(r.channels[1].group, QStringLiteral("Uncategorized"));
+    }
+
+    void m3u_catchup_attrs()
+    {
+        const QByteArray data =
+            "#EXTM3U\n"
+            "#EXTINF:-1 catchup=\"shift\" catchup-days=\"7\" group-title=Kids,Cartoons\n"
+            "http://s/c.ts\n";
+        const PlaylistResult r = M3uParser::parse(data);
+        QCOMPARE(r.channels.size(), 1);
+        QCOMPARE(r.channels[0].catchupType, QStringLiteral("shift"));
+        QCOMPARE(r.channels[0].catchupDays, 7);
+        QCOMPARE(r.channels[0].group, QStringLiteral("Kids"));   // unquoted value
+        QCOMPARE(r.channels[0].name, QStringLiteral("Cartoons"));
+    }
+
+    void m3u_skips_movies_and_series()
+    {
+        const QByteArray data =
+            "#EXTM3U\n"
+            "#EXTINF:-1 group-title=\"News\",News One\nhttp://h:80/user/pass/101\n"
+            "#EXTINF:-1 group-title=\"Sports\",Sports One\nhttp://h:80/live/user/pass/102.ts\n"
+            "#EXTINF:-1 group-title=\"Movies\",Some Film (2020)\nhttp://h:80/movie/user/pass/9001.mkv\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E01\nhttp://h:80/series/user/pass/7001.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E02\nhttp://h:80/series/user/pass/7002.mp4\n"
+            "#EXTINF:-1 group-title=\"Movies\",Other Film\nhttp://cdn.example/files/other.mp4?token=1\n"
+            "#EXTINF:-1 group-title=\"HLS\",Live HLS\nhttp://h:80/live/user/pass/103.m3u8\n";
+        const PlaylistResult r = M3uParser::parse(data);
+        QVERIFY(r.error.isEmpty());
+        QCOMPARE(r.channels.size(), 3);
+        QCOMPARE(r.channels[0].name, QStringLiteral("News One"));
+        QCOMPARE(r.channels[2].name, QStringLiteral("Live HLS"));
+        QCOMPARE(r.channels[2].number, 3);   // numbered after filtering
+        QCOMPARE(r.skippedMovies, 2);
+        QCOMPARE(r.skippedSeries, 2);
+        QCOMPARE(r.vodMovies.size(), 2);     // kept for the Movies screen
+        QCOMPARE(r.vodEpisodes.size(), 2);
+    }
+
+    void m3u_keeps_all_vod_playlist()
+    {
+        // A list of nothing but video files isn't emptied.
+        const PlaylistResult r = M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1,Home Video\nfile:///videos/a.mp4\n"
+            "#EXTINF:-1,Trip\nfile:///videos/b.mkv\n");
+        QCOMPARE(r.channels.size(), 2);
+        QCOMPARE(r.skippedMovies, 0);
+    }
+
+    void m3u_rejects_garbage()
+    {
+        QVERIFY(!M3uParser::parse("<html>Not found</html>").error.isEmpty());
+        QVERIFY(!M3uParser::parse("#EXTM3U\n").error.isEmpty());
+        QVERIFY(!M3uParser::parse("").error.isEmpty());
+    }
+
+    // ---- Xtream ----
+
+    void xtream_urls()
+    {
+        XtreamParser::Credentials c{QStringLiteral("example.com:8080/"), QStringLiteral("u@1"),
+                                    QStringLiteral("p&w"), QStringLiteral("ts")};
+        QCOMPARE(XtreamParser::normalizeServer(c.server).toString(),
+                 QStringLiteral("http://example.com:8080"));
+        QCOMPARE(XtreamParser::normalizeServer(QStringLiteral("https://x.tv/player_api.php")).toString(),
+                 QStringLiteral("https://x.tv"));
+        const QUrl api = XtreamParser::apiUrl(c, QStringLiteral("get_live_streams"));
+        QCOMPARE(api.path(), QStringLiteral("/player_api.php"));
+        QVERIFY(api.query(QUrl::FullyEncoded).contains(QStringLiteral("action=get_live_streams")));
+        QVERIFY(api.query(QUrl::FullyEncoded).contains(QStringLiteral("password=p%26w")));
+    }
+
+    void xtream_guide_from_m3u_link()
+    {
+        QCOMPARE(XtreamParser::guideUrlForPlaylist(QUrl(QStringLiteral(
+                     "http://srv.example:8080/get.php?username=bob&password=p%26w&type=m3u_plus&output=ts"))),
+                 QStringLiteral("http://srv.example:8080/xmltv.php?username=bob&password=p%26w"));
+        QCOMPARE(XtreamParser::guideUrlForPlaylist(QUrl(QStringLiteral(
+                     "https://x.tv/sub/get.php?username=a&password=b"))),
+                 QStringLiteral("https://x.tv/sub/xmltv.php?username=a&password=b"));
+        QVERIFY(XtreamParser::guideUrlForPlaylist(QUrl(QStringLiteral("http://x.tv/list.m3u"))).isEmpty());
+        QVERIFY(XtreamParser::guideUrlForPlaylist(QUrl(QStringLiteral("http://x.tv/get.php?username=a"))).isEmpty());
+    }
+
+    void redact()
+    {
+        QCOMPARE(Log::redact(QStringLiteral("http://h/xmltv.php?username=u&password=secret")),
+                 QStringLiteral("http://h/xmltv.php?username=u&password=***"));
+        QCOMPARE(Log::redact(QStringLiteral("http://h:80/live/user/secret/101.ts")),
+                 QStringLiteral("http://h:80/live/user/***/101.ts"));
+    }
+
+    void xtream_auth()
+    {
+        QVERIFY(XtreamParser::parseAuth("{\"user_info\":{\"auth\":1,\"status\":\"Active\"}}").ok);
+        QVERIFY(!XtreamParser::parseAuth("{\"user_info\":{\"auth\":0}}").ok);
+        QVERIFY(!XtreamParser::parseAuth("{\"user_info\":{\"auth\":1,\"status\":\"Expired\"}}").ok);
+        QVERIFY(!XtreamParser::parseAuth("not json").ok);
+    }
+
+    void xtream_streams()
+    {
+        QStringList order;
+        const auto cats = XtreamParser::parseCategories(
+            "[{\"category_id\":\"2\",\"category_name\":\"Sports\"},{\"category_id\":1,\"category_name\":\"News\"}]",
+            &order);
+        QCOMPARE(order, (QStringList{QStringLiteral("Sports"), QStringLiteral("News")}));
+
+        const QByteArray streams = "[\n"
+            "            {\"num\":1,\"name\":\"CNN\",\"stream_id\":101,\"stream_icon\":\"http://l/cnn.png\",\n"
+            "             \"epg_channel_id\":\"cnn.us\",\"category_id\":\"1\",\"tv_archive\":1,\"tv_archive_duration\":\"3\"},\n"
+            "            {\"num\":\"2\",\"name\":\"ESPN\",\"stream_id\":\"202\",\"category_id\":\"2\"},\n"
+            "            {\"num\":3,\"name\":\"Broken\"}\n"
+            "        ]";
+        XtreamParser::Credentials c{QStringLiteral("http://srv:80"), QStringLiteral("user"),
+                                    QStringLiteral("pass"), QStringLiteral("m3u8")};
+        const PlaylistResult r = XtreamParser::parseLiveStreams(streams, cats, c, order);
+        QVERIFY(r.error.isEmpty());
+        QCOMPARE(r.channels.size(), 2);
+        QCOMPARE(r.channels[0].url, QStringLiteral("http://srv:80/live/user/pass/101.m3u8"));
+        QCOMPARE(r.channels[0].group, QStringLiteral("News"));
+        QCOMPARE(r.channels[0].catchupDays, 3);
+        QCOMPARE(r.channels[1].number, 2);
+        QCOMPARE(r.channels[1].group, QStringLiteral("Sports"));
+        QVERIFY(r.epgUrl.startsWith(QStringLiteral("http://srv:80/xmltv.php")));
+        QCOMPARE(r.groupOrder, order);
+    }
+
+    // ---- Model + controller ----
+
+    void model_groups_and_zapping()
+    {
+        ChannelModel model;
+        model.setPlaylist(M3uParser::parse(sample()));
+        // Favorites, "All channels", then groups in order of appearance.
+        QCOMPARE(model.groups().size(), 5);
+        QCOMPARE(model.groupName(3), QStringLiteral("News"));
+        QCOMPARE(model.currentGroup(), int(ChannelModel::AllGroup));
+        QCOMPARE(model.count(), 4);
+
+        model.setCurrentGroup(4);   // Sports
+        QCOMPARE(model.count(), 2);
+        QCOMPARE(model.globalIndexAt(0), 1);
+        QCOMPARE(model.rowOf(0), -1);
+
+        // Zapping wraps inside the group.
+        QCOMPARE(model.step(1, +1, 4), 3);
+        QCOMPARE(model.step(3, +1, 4), 1);
+        QCOMPARE(model.step(1, -1, 4), 3);
+        QCOMPARE(model.findByNumber(4), 3);
+    }
+
+    void controller_number_entry_and_previous()
+    {
+        ChannelModel model;
+        AppSettings settings;
+        settings.saveM3u(QStringLiteral("http://test/list.m3u"));   // a playlist to remember the channel in
+        model.setPlaylist(M3uParser::parse(sample()));
+        PlayerController player(&model, &settings);
+        QSignalSpy plays(&player, &PlayerController::playRequested);
+        QSignalSpy missing(&player, &PlayerController::numberNotFound);
+
+        player.restoreAfterLoad();
+        QCOMPARE(player.currentIndex(), 0);
+        QVERIFY(!player.hasPrevious());
+
+        player.tune(1, 4);          // Sports One, picked from the Sports group
+        player.channelUp();         // stays in Sports -> Sports Two (index 3)
+        QCOMPARE(player.currentIndex(), 3);
+        player.previousChannel();
+        QCOMPARE(player.currentIndex(), 1);
+
+        player.typeDigit(3);
+        QCOMPARE(player.pendingNumber(), QStringLiteral("3"));
+        player.commitNumber();
+        QCOMPARE(player.currentIndex(), 2);
+
+        player.typeDigit(9);
+        player.typeDigit(9);
+        player.commitNumber();
+        QCOMPARE(missing.count(), 1);
+        QCOMPARE(player.currentIndex(), 2);
+        QCOMPARE(plays.count(), 5);
+
+        // Last channel is remembered across loads.
+        PlayerController again(&model, &settings);
+        again.restoreAfterLoad();
+        QCOMPARE(again.currentIndex(), 2);
+    }
+
+    void channel_keys()
+    {
+        Channel a; a.url = QStringLiteral("http://h:80/user/pass/12345");
+        Channel b; b.url = QStringLiteral("http://other-domain:8080/live/user/newpass/12345.ts");
+        Channel c; c.url = QStringLiteral("http://cdn.example/news/index.m3u8");
+        QCOMPARE(ChannelModel::channelKey(a), QStringLiteral("s:12345"));
+        QCOMPARE(ChannelModel::channelKey(b), ChannelModel::channelKey(a));   // survives domain/password changes
+        QCOMPARE(ChannelModel::channelKey(c), QStringLiteral("u:http://cdn.example/news/index.m3u8"));
+    }
+
+    void favorites_and_hiding()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("library.json"));
+        {
+            UserLibrary library(path);
+            ChannelModel model;
+            model.setLibrary(&library);
+            model.setPlaylist(M3uParser::parse(sample()));
+            AppSettings settings;
+            PlayerController player(&model, &settings);
+
+            QCOMPARE(model.toggleFavorite(3), true);   // Sports Two
+            QCOMPARE(model.toggleFavorite(0), true);   // News One
+            model.setCurrentGroup(ChannelModel::FavoritesGroup);
+            QCOMPARE(model.count(), 2);
+            QCOMPARE(model.globalIndexAt(0), 3);       // order added
+            QVERIFY(model.isFavorite(3));
+
+            // Zapping inside Favorites survives a group being hidden (indexes shift).
+            player.tune(3, ChannelModel::FavoritesGroup);
+            model.hideGroup(QStringLiteral("News"));
+            QCOMPARE(model.groupIndex(QStringLiteral("News")), -1);
+            QCOMPARE(model.groupIndex(QStringLiteral("Sports")), 3);
+            QCOMPARE(model.count(), 2);                // favorites still listed
+            player.channelUp();
+            QCOMPARE(player.currentIndex(), 0);        // News One, via Favorites
+
+            // Hidden group's channels leave All channels and number entry.
+            model.setCurrentGroup(ChannelModel::AllGroup);
+            QCOMPARE(model.count(), 2);
+            QCOMPARE(model.findByNumber(1), -1);
+            QCOMPARE(model.hiddenGroupsList().size(), 1);
+
+            // Hiding a channel removes it from favorites too.
+            model.hideChannel(3);
+            QCOMPARE(model.count(), 1);
+            QVERIFY(!model.isFavorite(3));
+            QCOMPARE(model.hiddenChannelsList().size(), 1);
+            library.saveNow();
+        }
+        {
+            // Everything comes back after a restart / playlist refresh.
+            UserLibrary library(path);
+            ChannelModel model;
+            model.setLibrary(&library);
+            model.setPlaylist(M3uParser::parse(sample()));
+            QCOMPARE(model.groupIndex(QStringLiteral("News")), -1);
+            QCOMPARE(model.count(), 1);                // All channels: Sports One
+            QVERIFY(model.isFavorite(0));
+            QVERIFY(!model.isFavorite(3));
+
+            model.unhideGroup(QStringLiteral("News"));
+            model.unhideChannel(model.hiddenChannelsList().first().toMap().value("key").toString());
+            QCOMPARE(model.count(), 4);
+            QCOMPARE(model.groupIndex(QStringLiteral("News")), 3);
+        }
+    }
+
+    void rename_reorder_and_search()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("library.json"));
+        const QByteArray playlist =
+            "#EXTM3U\n"
+            "#EXTINF:-1 tvg-chno=\"1\" group-title=\"News\",News One\nhttp://h/u/p/101\n"
+            "#EXTINF:-1 tvg-chno=\"2\" group-title=\"Sports\",Sports Zeta\nhttp://h/u/p/102\n"
+            "#EXTINF:-1 tvg-chno=\"3\" group-title=\"News\",Télé Matin\nhttp://h/u/p/103\n"
+            "#EXTINF:-1 tvg-chno=\"4\" group-title=\"Sports\",Sports Alpha\nhttp://h/u/p/104\n"
+            "#EXTINF:-1 tvg-chno=\"5\" group-title=\"Kids\",Cartoons\nhttp://h/u/p/105\n";
+        {
+            UserLibrary library(path);
+            ChannelModel model;
+            model.setLibrary(&library);
+            model.setPlaylist(M3uParser::parse(playlist));
+
+            // Search: accents/case ignored, all words must match, numbers rank first.
+            QCOMPARE(model.searchChannels(QStringLiteral("tele")).size(), 1);
+            QCOMPARE(model.searchChannels(QStringLiteral("SPORTS al")).size(), 1);
+            QCOMPARE(model.searchChannels(QStringLiteral("sports")).size(), 2);
+            const QVariantList byNumber = model.searchChannels(QStringLiteral("4"));
+            QCOMPARE(byNumber.first().toMap().value("name").toString(), QStringLiteral("Sports Alpha"));
+
+            // Rename a channel and a group; ids stay the same for hiding/zapping.
+            model.renameChannel(0, QStringLiteral("Morning News"));
+            QCOMPARE(model.channel(0)->name, QStringLiteral("Morning News"));
+            QCOMPARE(model.originalChannels()[0].name, QStringLiteral("News One"));
+            QCOMPARE(model.searchChannels(QStringLiteral("morning")).size(), 1);
+            const int sports = model.groupIndex(QStringLiteral("Sports"));
+            model.renameGroup(sports, QStringLiteral("Live Sport"));
+            QCOMPARE(model.groupLabel(sports), QStringLiteral("Live Sport"));
+            QCOMPARE(model.groupName(sports), QStringLiteral("Sports"));
+            QCOMPARE(model.groups()[sports].toMap().value("name").toString(), QStringLiteral("Live Sport"));
+
+            // Reorder groups: Kids up to the top of the playlist groups.
+            int kids = model.groupIndex(QStringLiteral("Kids"));
+            QCOMPARE(kids, 5);
+            kids = model.moveGroup(kids, -1);
+            kids = model.moveGroup(kids, -1);
+            QCOMPARE(kids, 3);
+            QCOMPARE(model.moveGroup(kids, -1), 3);   // can't pass All channels
+
+            // Reorder channels inside Sports, then sort A–Z and reset.
+            model.setCurrentGroup(model.groupIndex(QStringLiteral("Sports")));
+            QCOMPARE(model.globalIndexAt(0), 1);      // Sports Zeta first (playlist order)
+            QCOMPARE(model.moveChannel(1, -1), 0);
+            QCOMPARE(model.globalIndexAt(0), 3);
+            model.resetGroupOrder(model.currentGroup());
+            QCOMPARE(model.globalIndexAt(0), 1);
+            model.sortGroup(model.currentGroup());
+            QCOMPARE(model.globalIndexAt(0), 3);      // Alpha before Zeta
+
+            // Favorites order.
+            model.toggleFavorite(4);
+            model.toggleFavorite(2);
+            model.setCurrentGroup(ChannelModel::FavoritesGroup);
+            QCOMPARE(model.globalIndexAt(0), 4);
+            QCOMPARE(model.moveChannel(1, -1), 0);
+            QCOMPARE(model.globalIndexAt(0), 2);
+
+            // All channels can't be reordered.
+            model.setCurrentGroup(ChannelModel::AllGroup);
+            QVERIFY(!model.canMoveChannels());
+            QCOMPARE(model.moveChannel(0, 1), 0);
+
+            // Recently watched: newest first, no duplicates; while zapping
+            // inside it the order on screen waits for refreshRecent().
+            model.noteWatched(1, false);
+            model.noteWatched(4, false);
+            model.noteWatched(1, false);
+            model.setCurrentGroup(ChannelModel::RecentGroup);
+            QCOMPARE(model.count(), 2);
+            QCOMPARE(model.globalIndexAt(0), 1);
+            QVERIFY(!model.canMoveChannels());
+            model.noteWatched(4, true);
+            QCOMPARE(model.globalIndexAt(0), 1);
+            model.refreshRecent();
+            QCOMPARE(model.globalIndexAt(0), 4);
+            library.saveNow();
+        }
+        {
+            // Everything survives a restart / playlist refresh.
+            UserLibrary library(path);
+            ChannelModel model;
+            model.setLibrary(&library);
+            model.setPlaylist(M3uParser::parse(playlist));
+            QCOMPARE(model.channel(0)->name, QStringLiteral("Morning News"));
+            QCOMPARE(model.groupIndex(QStringLiteral("Kids")), 3);
+            model.setCurrentGroup(ChannelModel::RecentGroup);
+            QCOMPARE(model.globalIndexAt(0), 4);       // remembered
+            QCOMPARE(model.groupLabel(model.groupIndex(QStringLiteral("Sports"))), QStringLiteral("Live Sport"));
+            model.setCurrentGroup(model.groupIndex(QStringLiteral("Sports")));
+            QCOMPARE(model.globalIndexAt(0), 3);
+            model.setCurrentGroup(ChannelModel::FavoritesGroup);
+            QCOMPARE(model.globalIndexAt(0), 2);
+
+            // Clearing a name restores the original.
+            model.renameChannel(0, QString());
+            QCOMPARE(model.channel(0)->name, QStringLiteral("News One"));
+        }
+    }
+    void xtream_credentials_from_m3u_link()
+    {
+        XtreamParser::Credentials c;
+        QVERIFY(XtreamParser::credentialsFromPlaylistUrl(
+            QUrl(QStringLiteral("http://tv.example:8080/get.php?username=me&password=p%40ss&type=m3u_plus&output=ts")), &c));
+        QCOMPARE(c.server, QStringLiteral("http://tv.example:8080"));
+        QCOMPARE(c.username, QStringLiteral("me"));
+        QCOMPARE(c.password, QStringLiteral("p@ss"));
+        QCOMPARE(XtreamParser::apiUrl(c, QStringLiteral("get_vod_streams")).toString(),
+                 QStringLiteral("http://tv.example:8080/player_api.php?username=me&password=p@ss&action=get_vod_streams"));
+        QVERIFY(!XtreamParser::credentialsFromPlaylistUrl(QUrl(QStringLiteral("http://x/list.m3u")), &c));
+        QVERIFY(!XtreamParser::credentialsFromPlaylistUrl(QUrl(QStringLiteral("file:///get.php?username=a&password=b")), &c));
+    }
+
+    void vod_lists()
+    {
+        const QByteArray cats = "[{\"category_id\":\"5\",\"category_name\":\"Action\"},"
+                                "{\"category_id\":6,\"category_name\":\"Drama\"},{\"category_id\":\"5\",\"category_name\":\"dup\"}]";
+        const auto c = VodParser::parseCategories(cats);
+        QCOMPARE(c.size(), 2);
+        QCOMPARE(c[1].id, QStringLiteral("6"));
+        QVERIFY(VodParser::isList("[]"));
+        QVERIFY(!VodParser::isList("{\"user_info\":{}}"));
+        QVERIFY(!VodParser::isList("<html>"));
+
+        const QByteArray movies =
+            "[{\"num\":1,\"name\":\"Big Film (2019)\",\"stream_id\":101,\"stream_icon\":\"http://i/1.jpg\","
+            "\"rating\":\"7.4\",\"added\":\"1700000000\",\"category_id\":\"5\",\"container_extension\":\"mkv\"},"
+            "{\"name\":\"No id\"},"
+            "{\"name\":\"Second\",\"stream_id\":\"102\",\"rating\":null,\"year\":\"2021\",\"category_id\":6}]";
+        const auto m = VodParser::parseMovies(movies);
+        QCOMPARE(m.size(), 2);
+        QCOMPARE(m[0].id, QStringLiteral("101"));
+        QCOMPARE(m[0].year, QStringLiteral("2019"));
+        QCOMPARE(m[0].ext, QStringLiteral("mkv"));
+        QCOMPARE(m[0].added, qint64(1700000000));
+        QVERIFY(qAbs(m[0].rating - 7.4) < 0.001);
+        QCOMPARE(m[1].year, QStringLiteral("2021"));
+        QCOMPARE(m[1].categoryId, QStringLiteral("6"));
+
+        const auto s = VodParser::parseSeries(
+            "[{\"name\":\"Show\",\"series_id\":9,\"cover\":\"http://i/s.jpg\",\"releaseDate\":\"2015-02-01\",\"category_id\":\"3\"}]");
+        QCOMPARE(s.size(), 1);
+        QCOMPARE(s[0].poster, QStringLiteral("http://i/s.jpg"));
+        QCOMPARE(s[0].year, QStringLiteral("2015"));
+    }
+
+    void vod_details()
+    {
+        XtreamParser::Credentials c{QStringLiteral("http://h:80/"), QStringLiteral("u"), QStringLiteral("p")};
+        VodItem film;
+        film.id = QStringLiteral("101");
+        film.title = QStringLiteral("Big Film");
+        film.ext = QStringLiteral("mkv");
+        const QVariantMap d = VodParser::parseMovieInfo(
+            "{\"info\":{\"plot\":\"A plot.\",\"genre\":\"Action\",\"duration_secs\":6300,\"rating\":\"8\","
+            "\"cast\":\"A, B\",\"backdrop_path\":[\"http://i/b.jpg\"],\"releasedate\":\"2019-05-03\"},"
+            "\"movie_data\":{\"stream_id\":101,\"container_extension\":\"mp4\"}}", c, film);
+        QCOMPARE(d.value("plot").toString(), QStringLiteral("A plot."));
+        QCOMPARE(d.value("duration").toString(), QStringLiteral("1 h 45 min"));
+        QCOMPARE(d.value("backdrop").toString(), QStringLiteral("http://i/b.jpg"));
+        QCOMPARE(d.value("year").toString(), QStringLiteral("2019"));
+        QCOMPARE(d.value("url").toString(), QStringLiteral("http://h:80/movie/u/p/101.mp4"));
+        // Missing info still gives a playable address.
+        QCOMPARE(VodParser::parseMovieInfo("not json", c, film).value("url").toString(),
+                 QStringLiteral("http://h:80/movie/u/p/101.mkv"));
+
+        VodItem show;
+        show.id = QStringLiteral("9");
+        show.title = QStringLiteral("Show");
+        // Episodes keyed by season (the usual shape), out of order.
+        const QVariantMap s = VodParser::parseSeriesInfo(
+            "{\"seasons\":[{\"season_number\":2,\"name\":\"Second Season\"}],\"info\":{\"plot\":\"P\"},"
+            "\"episodes\":{\"2\":[{\"id\":\"21\",\"episode_num\":1,\"title\":\"Two-one\",\"container_extension\":\"mkv\"}],"
+            "\"1\":[{\"id\":\"12\",\"episode_num\":2,\"title\":\"One-two\",\"container_extension\":\"mp4\",\"info\":{\"duration\":\"00:42:00\"}},"
+            "{\"id\":\"11\",\"episode_num\":1,\"title\":\"One-one\",\"container_extension\":\"mp4\"}]}}", c, show);
+        const QVariantList eps = s.value("episodes").toList();
+        QCOMPARE(eps.size(), 3);
+        QCOMPARE(eps[0].toMap().value("id").toString(), QStringLiteral("11"));
+        QCOMPARE(eps[1].toMap().value("duration").toString(), QStringLiteral("42 min"));
+        QCOMPARE(eps[2].toMap().value("url").toString(), QStringLiteral("http://h:80/series/u/p/21.mkv"));
+        // "Show - S01E02 - Title" keeps just the title; other names are left alone.
+        const QVariantMap named = VodParser::parseSeriesInfo(
+            "{\"episodes\":{\"1\":[{\"id\":\"1\",\"episode_num\":1,\"title\":\"Show - S01E01 - Pilot\"},"
+            "{\"id\":\"2\",\"episode_num\":2,\"title\":\"S01 E02\"},"
+            "{\"id\":\"3\",\"episode_num\":3,\"title\":\"The Return\"}]}}", c, show);
+        const QVariantList ne = named.value("episodes").toList();
+        QCOMPARE(ne[0].toMap().value("title").toString(), QStringLiteral("Pilot"));
+        QCOMPARE(ne[1].toMap().value("title").toString(), QString());
+        QCOMPARE(ne[2].toMap().value("title").toString(), QStringLiteral("The Return"));
+        const QVariantList seasons = s.value("seasons").toList();
+        QCOMPARE(seasons.size(), 2);
+        QCOMPARE(seasons[0].toMap().value("name").toString(), QStringLiteral("Season 1"));
+        QCOMPARE(seasons[1].toMap().value("name").toString(), QStringLiteral("Second Season"));
+        // Some panels send a flat array.
+        const QVariantMap flat = VodParser::parseSeriesInfo(
+            "{\"episodes\":[{\"id\":\"5\",\"season\":3,\"episode_num\":4}]}", c, show);
+        QCOMPARE(flat.value("episodes").toList().first().toMap().value("season").toInt(), 3);
+    }
+
+    void vod_m3u_catalogue()
+    {
+        const PlaylistResult r = M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1,Live\nhttp://h/live/u/p/1.ts\n"
+            "#EXTINF:-1 group-title=\"Films\" tvg-logo=\"http://i/f.jpg\",Film (2020)\nhttp://h/movie/u/p/50.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",My Show S01 E02\nhttp://h/series/u/p/62.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",My Show S01E01 - Pilot\nhttp://h/series/u/p/61.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",My Show S02 E01\nhttp://h/series/u/p/63.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Other.Show.S01E01\nhttp://h/series/u/p/70.mp4\n");
+        const auto cat = VodParser::buildM3uCatalogue(r.vodMovies, r.vodEpisodes);
+        QCOMPARE(cat.movies.size(), 1);
+        QCOMPARE(cat.movies[0].year, QStringLiteral("2020"));
+        QCOMPARE(cat.movies[0].id, QStringLiteral("u:http://h/movie/u/p/50.mp4"));
+        QCOMPARE(cat.series.size(), 2);
+        QCOMPARE(cat.series[0].title, QStringLiteral("My Show"));
+        QCOMPARE(cat.series[1].title, QStringLiteral("Other.Show"));
+        const QVariantList eps = cat.episodes.value(cat.series[0].id);
+        QCOMPARE(eps.size(), 3);
+        QCOMPARE(eps[1].toMap().value("title").toString(), QStringLiteral("Pilot"));
+        QCOMPARE(eps[1].toMap().value("episode").toInt(), 1);
+        QCOMPARE(cat.seriesCategories, QStringList{QStringLiteral("Shows")});
+    }
+
+    void vod_service_m3u_progress_and_favorites()
+    {
+        QTemporaryDir dir;
+        UserLibrary lib(dir.filePath("library.json"));
+        VodService vod(&lib, dir.filePath("vod"));
+        const PlaylistResult r = M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1,Live\nhttp://h/live/u/p/1.ts\n"
+            "#EXTINF:-1 group-title=\"Films\",Alpha Film\nhttp://cdn/a.mp4\n"
+            "#EXTINF:-1 group-title=\"Films\",Beta Film\nhttp://cdn/b.mp4\n"
+            "#EXTINF:-1 group-title=\"Other\",Gamma\nhttp://cdn/c.mkv\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E01\nhttp://h/series/u/p/1.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E02\nhttp://h/series/u/p/2.mp4\n");
+        vod.setSource(r);
+        QVERIFY(vod.available());
+        QSignalSpy state(&vod, &VodService::stateChanged);
+        vod.ensureLoaded();
+        QTRY_VERIFY(vod.loaded());
+        QCOMPARE(vod.movieCount(), 3);
+        QCOMPARE(vod.seriesCount(), 1);
+        QCOMPARE(vod.items()->count(), 3);
+
+        vod.setFilter(QStringLiteral("film"));
+        QCOMPARE(vod.items()->count(), 2);
+        vod.setFilter(QString());
+        vod.setCategory(QStringLiteral("c:Other"));
+        QCOMPARE(vod.items()->count(), 1);
+        vod.setCategory(QStringLiteral("all"));
+        vod.setSort(2);
+        QCOMPARE(vod.rowAt(0).value("title").toString(), QStringLiteral("Alpha Film"));
+
+        // Movie: details, playback, progress -> Continue watching.
+        QSignalSpy details(&vod, &VodService::detailsReady);
+        const QString alpha = vod.rowAt(0).value("id").toString();
+        vod.requestDetails(QStringLiteral("movie"), alpha);
+        QTRY_COMPARE(details.count(), 1);
+        QVariantMap d = details.takeFirst().first().toMap();
+        QCOMPARE(d.value("url").toString(), QStringLiteral("http://cdn/a.mp4"));
+        QVariantMap play = vod.playback(d);
+        QCOMPARE(play.value("start").toDouble(), 0.0);
+        vod.saveProgress(play, 600, 6000);
+        bool hasContinue = false;
+        for (const QVariant &c : vod.categories())
+            if (c.toMap().value("id") == QLatin1String("continue")) hasContinue = c.toMap().value("count").toInt() == 1;
+        QVERIFY(hasContinue);
+        vod.setCategory(QStringLiteral("continue"));
+        QCOMPARE(vod.items()->count(), 1);
+        QCOMPARE(vod.rowAt(0).value("subtitle").toString(), QStringLiteral("90 min left"));
+        vod.requestDetails(QStringLiteral("movie"), alpha);
+        QTRY_COMPARE(details.count(), 1);
+        d = details.takeFirst().first().toMap();
+        QCOMPARE(vod.playback(d).value("start").toDouble(), 595.0);     // resumes a little earlier
+        QCOMPARE(vod.playback(d, -1, true).value("start").toDouble(), 0.0);
+        vod.saveProgress(play, 5500, 6000);                            // >= 90 %: watched
+        QCOMPARE(vod.items()->count(), 0);
+
+        // Series: episodes, next episode, "up next" in Continue watching.
+        vod.setSection(1);
+        vod.setCategory(QStringLiteral("all"));
+        QCOMPARE(vod.items()->count(), 1);
+        const QString show = vod.rowAt(0).value("id").toString();
+        vod.requestDetails(QStringLiteral("series"), show);
+        QTRY_COMPARE(details.count(), 1);
+        d = details.takeFirst().first().toMap();
+        QCOMPARE(d.value("episodes").toList().size(), 2);
+        QCOMPARE(d.value("resumeIndex").toInt(), 0);
+        const QVariantMap ep1 = vod.playback(d);
+        QCOMPARE(ep1.value("subtitle").toString(), QStringLiteral("S1 E1"));
+        const QVariantMap ep2 = vod.nextEpisode(ep1);
+        QCOMPARE(ep2.value("episode").toInt(), 2);
+        QVERIFY(vod.nextEpisode(ep2).isEmpty());
+        vod.saveProgress(ep1, 1300, 1400);   // finished: E2 is queued
+        vod.setCategory(QStringLiteral("continue"));
+        QCOMPARE(vod.items()->count(), 1);
+        QCOMPARE(vod.rowAt(0).value("subtitle").toString(), QStringLiteral("Next: S1 E2"));
+        vod.requestDetails(QStringLiteral("series"), show);
+        QTRY_COMPARE(details.count(), 1);
+        QCOMPARE(details.takeFirst().first().toMap().value("resumeIndex").toInt(), 1);
+        vod.forgetProgress(QStringLiteral("series:") + show);
+        QCOMPARE(vod.items()->count(), 0);
+
+        // Favorites survive a restart of the library.
+        QVERIFY(vod.toggleFavorite(QStringLiteral("series"), show));
+        vod.setCategory(QStringLiteral("favorites"));
+        QCOMPARE(vod.items()->count(), 1);
+        QVERIFY(vod.items()->data(vod.items()->index(0), VodModel::FavoriteRole).toBool());
+        lib.saveNow();
+        UserLibrary again(dir.filePath("library.json"));
+        QVERIFY(again.isVodFavorite(QStringLiteral("series:") + show));
+        QCOMPARE(again.vodFavorite(QStringLiteral("series:") + show).value("title").toString(), QStringLiteral("Show"));
+        QVERIFY(!again.vodProgress(QStringLiteral("movie:") + alpha).isEmpty());
+    }
+
+    void catchup_urls()
+    {
+        Catchup::Account acc;
+        acc.server = QStringLiteral("http://tv.example:8080");
+        acc.username = QStringLiteral("me");
+        acc.password = QStringLiteral("p@ss");
+        acc.zone = QTimeZone("Europe/London");
+        QCOMPARE(Catchup::streamIdFromUrl(QStringLiteral("http://h:80/live/u/p/1234.ts")), QStringLiteral("1234"));
+        QCOMPARE(Catchup::streamIdFromUrl(QStringLiteral("http://h:80/u/p/987")), QStringLiteral("987"));
+        QCOMPARE(Catchup::streamIdFromUrl(QStringLiteral("http://h/live/news.m3u8")), QString());
+
+        Channel ch;
+        ch.url = QStringLiteral("http://tv.example:8080/live/me/p%40ss/1234.ts");
+        ch.catchupType = QStringLiteral("xc");
+        ch.catchupDays = 3;
+        // 2026-07-01 18:00:30 UTC = 19:00 in London (summer time), 60 min show.
+        const qint64 start = QDateTime(QDate(2026, 7, 1), QTime(18, 0, 30), QTimeZone::utc()).toSecsSinceEpoch();
+        int adjust = -1;
+        QCOMPARE(Catchup::url(ch, start, start + 3570, start + 7200, acc, &adjust),
+                 QStringLiteral("http://tv.example:8080/timeshift/me/p%40ss/60/2026-07-01:19-00/1234.ts"));
+        QCOMPARE(adjust, 30);
+        // In winter London is UTC+0.
+        const qint64 winter = QDateTime(QDate(2026, 1, 10), QTime(20, 15), QTimeZone::utc()).toSecsSinceEpoch();
+        QVERIFY(Catchup::url(ch, winter, winter + 1800, winter + 3600, acc).contains(QStringLiteral("/30/2026-01-10:20-15/")));
+        // No zone name: use the server clock's offset.
+        Catchup::Account off = acc;
+        off.zone = QTimeZone();
+        off.offsetSecs = -5 * 3600;
+        QVERIFY(Catchup::url(ch, winter, winter + 1800, winter + 3600, off).contains(QStringLiteral("2026-01-10:15-15")));
+        // Without an account, "xc" isn't usable.
+        QVERIFY(!Catchup::supported(ch, Catchup::Account{}));
+
+        // M3U templates
+        Channel m;
+        m.url = QStringLiteral("http://cdn/ch/index.m3u8");
+        m.catchupDays = 2;
+        m.catchupType = QStringLiteral("default");
+        m.catchupSource = QStringLiteral("http://cdn/ch/archive-{utc}-{duration}.m3u8?end=${end}&d={Y}{m}{d}{H}{M}&now={lutc}&x={unknown}");
+        QCOMPARE(Catchup::url(m, 1000, 4600, 9000, Catchup::Account{}),
+                 QStringLiteral("http://cdn/ch/archive-1000-3600.m3u8?end=4600&d=197001010016&now=9000&x={unknown}"));
+        m.catchupType = QStringLiteral("append");
+        m.catchupSource = QStringLiteral("?utc={utc}&lutc={lutc}&min={duration:60}");
+        QCOMPARE(Catchup::url(m, 1000, 4600, 9000, Catchup::Account{}),
+                 QStringLiteral("http://cdn/ch/index.m3u8?utc=1000&lutc=9000&min=60"));
+        m.catchupType = QStringLiteral("shift");
+        QCOMPARE(Catchup::url(m, 1000, 4600, 9000, Catchup::Account{}),
+                 QStringLiteral("http://cdn/ch/index.m3u8?utc=1000&lutc=9000"));
+        m.catchupType = QStringLiteral("flussonic");
+        QCOMPARE(Catchup::url(m, 1000, 4600, 9000, Catchup::Account{}),
+                 QStringLiteral("http://cdn/ch/index-1000-3600.m3u8"));
+        m.url = QStringLiteral("http://cdn/ch/mpegts?token=1");
+        QCOMPARE(Catchup::url(m, 1000, 4600, 9000, Catchup::Account{}),
+                 QStringLiteral("http://cdn/ch/timeshift_abs-1000.ts?token=1"));
+        m.catchupType = QStringLiteral("vod");   // not a type we know
+        QVERIFY(Catchup::url(m, 1000, 4600, 9000, Catchup::Account{}).isEmpty());
+        QCOMPARE(Catchup::expand(QStringLiteral("{utc:Y-m-d H:M:S}"), 0, 0, 0), QStringLiteral("1970-01-01 00:00:00"));
+    }
+
+    void catchup_server_info()
+    {
+        const auto a = XtreamParser::parseAuth(
+            "{\"user_info\":{\"auth\":1,\"status\":\"Active\"},"
+            "\"server_info\":{\"timezone\":\"America/New_York\",\"time_now\":\"2026-11-09 16:20:11\"}}");
+        QVERIFY(a.ok);
+        QCOMPARE(a.timezone, QStringLiteral("America/New_York"));
+        QCOMPARE(a.timeNow, QStringLiteral("2026-11-09 16:20:11"));
+        const auto days = XtreamParser::parseArchiveDays(
+            "[{\"stream_id\":1,\"tv_archive\":1,\"tv_archive_duration\":\"5\"},"
+            "{\"stream_id\":\"2\",\"tv_archive\":0,\"tv_archive_duration\":3},"
+            "{\"stream_id\":3,\"tv_archive\":\"1\",\"tv_archive_duration\":0}]");
+        QCOMPARE(days.size(), 1);
+        QCOMPARE(days.value(QStringLiteral("1")), 5);
+    }
+
+    void catchup_model_and_player()
+    {
+        AppSettings settings;
+        settings.clearSource();
+        ChannelModel model;
+        // get.php style playlist: no catch-up attributes in the entries.
+        model.setPlaylist(M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1 group-title=\"A\",One\nhttp://tv:80/u/p/11\n"
+            "#EXTINF:-1 group-title=\"A\",Two\nhttp://tv:80/u/p/22\n"));
+        CatchupService catchup(&model);
+        PlayerController player(&model, &settings);
+        player.setCatchup(&catchup);
+        const double now = double(QDateTime::currentMSecsSinceEpoch());
+        QVERIFY(!catchup.available(0, now - 3600000));
+
+        QCOMPARE(model.applyArchiveDays({{QStringLiteral("11"), 2}}), 1);
+        // Days known, but no account yet: still unavailable.
+        QVERIFY(!catchup.available(0, now - 3600000));
+        Catchup::Account acc;
+        acc.server = QStringLiteral("http://tv:80");
+        acc.username = QStringLiteral("u");
+        acc.password = QStringLiteral("p");
+        acc.zone = QTimeZone::utc();
+        catchup.setAccount(acc);
+        QCOMPARE(catchup.channelCount(), 1);
+        QVERIFY(catchup.available(0, now - 3600000));
+        QVERIFY(!catchup.available(0, now - 3 * 86400000.0));   // older than the archive
+        QVERIFY(!catchup.available(0, now + 60000));             // not aired yet
+        QVERIFY(!catchup.available(1, now - 3600000));           // no archive
+        QCOMPARE(model.data(model.index(0), ChannelModel::CatchupDaysRole).toInt(), 2);
+        QCOMPARE(model.data(model.index(1), ChannelModel::CatchupDaysRole).toInt(), 0);
+
+        QSignalSpy vod(&player, &PlayerController::vodRequested);
+        const double start = now - 2 * 3600000.0 - 15000;   // started 2 h ago (15 s past a minute or so)
+        const QVariantMap show{{"title", QStringLiteral("News")}, {"start", start}, {"stop", start + 3600000.0}};
+        QVERIFY(player.playCatchup(0, show, 600));
+        QCOMPARE(vod.count(), 1);
+        QVERIFY(player.vodActive());
+        QCOMPARE(player.currentIndex(), 0);
+        const QString url = vod.takeFirst().first().toString();
+        QVERIFY(url.startsWith(QStringLiteral("http://tv:80/timeshift/u/p/")));
+        QVERIFY(url.endsWith(QStringLiteral("/11.ts")));
+        QCOMPARE(player.vod().value("programmeStart").toDouble(), start);
+        QCOMPARE(player.vod().value("offset").toDouble(), 600.0);
+        // Seeking asks again from the new time, within the same show.
+        player.seekCatchup(1200);
+        QCOMPARE(vod.count(), 1);
+        QCOMPARE(player.vod().value("offset").toDouble(), 1200.0);
+        QCOMPARE(player.vod().value("programmeStop").toDouble(), start + 3600000.0);
+        // No archive on channel 2.
+        QVERIFY(!player.playCatchup(1, show, 0));
+        player.stopVod();
+        QVERIFY(!player.vodActive());
+    }
+
+    void hls_playlists()
+    {
+        const auto master = Hls::parse(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/index.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nhigh/index.m3u8\n",
+            QUrl(QStringLiteral("http://cdn/ch/master.m3u8")));
+        QVERIFY(master.valid && master.master);
+        QCOMPARE(master.variants.first(), QUrl(QStringLiteral("http://cdn/ch/high/index.m3u8")));
+        const auto media = Hls::parse(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:120\n"
+            "#EXTINF:4.0,\nseg120.ts\n#EXTINF:4.0,\nhttp://other/seg121.ts\n",
+            QUrl(QStringLiteral("http://cdn/ch/high/index.m3u8")));
+        QVERIFY(!media.master);
+        QCOMPARE(media.segments.size(), 2);
+        QCOMPARE(media.segments[0].sequence, qint64(120));
+        QCOMPARE(media.segments[0].url, QUrl(QStringLiteral("http://cdn/ch/high/seg120.ts")));
+        QCOMPARE(media.segments[1].url, QUrl(QStringLiteral("http://other/seg121.ts")));
+        QCOMPARE(media.targetDuration, 4.0);
+        QVERIFY(Hls::parse("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n", QUrl()).encrypted);
+        QVERIFY(!Hls::parse("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n", QUrl()).encrypted);
+        QVERIFY(!Hls::parse("<html>", QUrl()).valid);
+        QVERIFY(Hls::looksLikeHls(QUrl(QStringLiteral("http://h/a/index.m3u8?t=1"))));
+        QVERIFY(!Hls::looksLikeHls(QUrl(QStringLiteral("http://h/live/u/p/1.ts"))));
+    }
+
+    void recorder_ts_and_hls()
+    {
+        StreamServer server;
+        QNetworkAccessManager net;
+        QTemporaryDir dir;
+
+        Recorder ts(&net, QUrl(server.base() + QStringLiteral("/live.ts")), {}, {}, dir.filePath("a.ts"));
+        ts.start();
+        QTRY_VERIFY_WITH_TIMEOUT(ts.bytes() > 200000, 5000);
+        QCOMPARE(ts.state(), Recorder::State::Recording);
+        ts.stop();
+        QCOMPARE(ts.state(), Recorder::State::Finished);
+        QCOMPARE(QFileInfo(dir.filePath("a.ts")).size(), ts.bytes());
+
+        // HLS: starts near live (last 3 segments), then follows new ones.
+        Recorder hls(&net, QUrl(server.base() + QStringLiteral("/hls.m3u8")), {}, {}, dir.filePath("b.ts"));
+        hls.start();
+        QTRY_VERIFY_WITH_TIMEOUT(hls.bytes() >= 5000, 8000);
+        hls.stop();
+        QCOMPARE(hls.state(), Recorder::State::Finished);
+        QCOMPARE(QFileInfo(dir.filePath("b.ts")).size() % 1000, 0);
+
+        // Nothing there: retries, then fails on stop with nothing saved.
+        Recorder bad(&net, QUrl(server.base() + QStringLiteral("/missing.ts")), {}, {}, dir.filePath("c.ts"));
+        bad.start();
+        QTRY_COMPARE_WITH_TIMEOUT(bad.state(), Recorder::State::Retrying, 3000);
+        bad.stop();
+        QCOMPARE(bad.state(), Recorder::State::Failed);
+    }
+
+    void schedule_reminders_and_recordings()
+    {
+        StreamServer server;
+        QTemporaryDir dir;
+        ChannelModel model;
+        model.setPlaylist(M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1 group-title=\"A\",One\n" + (server.base() + QStringLiteral("/live.ts")).toUtf8() + "\n"
+            "#EXTINF:-1 group-title=\"A\",Two\nhttp://127.0.0.1:1/none.ts\n"));
+        const double now = double(QDateTime::currentMSecsSinceEpoch());
+        {
+            ScheduleService schedule(&model, nullptr, dir.path(), dir.filePath("Recordings"));
+            QSignalSpy due(&schedule, &ScheduleService::reminderDue);
+
+            // Reminder for a show starting in 30 s: due now (fires a minute early).
+            const QVariantMap soon{{"title", QStringLiteral("Soon Show")}, {"start", now + 30000}, {"stop", now + 1830000}};
+            QVERIFY(!schedule.addReminder(0, soon).isEmpty());
+            QCOMPARE(due.count(), 1);
+            QCOMPARE(due.first().first().toMap().value("title").toString(), QStringLiteral("Soon Show"));
+            QVERIFY(schedule.items().isEmpty());
+            // Reminder for later stays, and is shown in the guide.
+            const QVariantMap later{{"title", QStringLiteral("Later")}, {"start", now + 7200000}, {"stop", now + 9000000}};
+            const QString rid = schedule.addReminder(1, later);
+            QCOMPARE(schedule.markFor(1, later.value("start").toDouble()), QStringLiteral("reminder"));
+            QCOMPARE(schedule.addReminder(1, later), rid);   // no duplicates
+            // No reminders for shows that have started.
+            QVERIFY(schedule.addReminder(0, {{"title", "x"}, {"start", now - 1000}, {"stop", now + 1000}}).isEmpty());
+
+            // Recording a show that's on: starts straight away.
+            const QVariantMap on{{"title", QStringLiteral("News: Live?")}, {"start", now - 600000}, {"stop", now + 600000}};
+            const QString id = schedule.addRecording(0, on);
+            QVERIFY(!id.isEmpty());
+            QCOMPARE(schedule.recordingCount(), 1);
+            QCOMPARE(schedule.markFor(0, on.value("start").toDouble()), QStringLiteral("recording"));
+            QTRY_VERIFY_WITH_TIMEOUT(schedule.item(id).value("bytes").toDouble() > 100000, 5000);
+            const QString file = schedule.item(id).value("file").toString();
+            QVERIFY(file.contains(QStringLiteral("News_ Live_ - One - ")));
+            schedule.stopRecording(id);
+            QCOMPARE(schedule.recordingCount(), 0);
+            QCOMPARE(schedule.item(id).value("status").toString(), QStringLiteral("done"));
+            QVERIFY(QFileInfo(file).size() > 100000);
+
+            // A show already over can't be recorded; a future one waits.
+            QVERIFY(schedule.addRecording(0, {{"title", "old"}, {"start", now - 7200000}, {"stop", now - 3600000}}).isEmpty());
+            const QString fut = schedule.addRecording(1, later);
+            QCOMPARE(schedule.item(fut).value("status").toString(), QStringLiteral("scheduled"));
+            QCOMPARE(schedule.recordingCount(), 0);
+        }
+        // Everything survives a restart; deleting removes the file.
+        ScheduleService again(&model, nullptr, dir.path(), dir.filePath("Recordings"));
+        QCOMPARE(again.items().size(), 3);   // reminder, finished recording, scheduled recording
+        QString doneId, doneFile;
+        for (const QVariant &v : again.items()) {
+            const QVariantMap m = v.toMap();
+            if (m.value("status") == QLatin1String("done")) { doneId = m.value("id").toString(); doneFile = m.value("file").toString(); }
+        }
+        QVERIFY(QFileInfo::exists(doneFile));
+        again.remove(doneId, true);
+        QVERIFY(!QFileInfo::exists(doneFile));
+        QCOMPARE(again.items().size(), 2);
+    }
+
+    void parental_pin_and_locks()
+    {
+        QSettings().remove("parental");
+        QTemporaryDir dir;
+        AppSettings settings;
+        settings.clearSource();
+        UserLibrary lib(dir.filePath("library.json"));
+        ChannelModel model;
+        model.setLibrary(&lib);
+        model.setPlaylist(M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1 tvg-chno=\"1\" group-title=\"News\",News One\nhttp://s/1\n"
+            "#EXTINF:-1 tvg-chno=\"2\" group-title=\"Adult\",Late One\nhttp://s/2\n"
+            "#EXTINF:-1 tvg-chno=\"3\" group-title=\"Adult\",Late Two\nhttp://s/3\n"
+            "#EXTINF:-1 tvg-chno=\"4\" group-title=\"News\",News Two\nhttp://s/4\n"));
+        Parental parental(&model, &lib);
+        PlayerController player(&model, &settings);
+        player.setParental(&parental);
+
+        QVERIFY(!parental.hasPin());
+        QVERIFY(parental.unlocked());
+        QVERIFY(!Parental::validPin(QStringLiteral("12a4")));
+        QVERIFY(!parental.setPin({}, QStringLiteral("123")));
+        QVERIFY(parental.setPin({}, QStringLiteral("2468")));
+        QVERIFY(parental.hasPin());
+        QVERIFY(parental.unlocked());   // whoever set it can carry on
+
+        // Lock the "Adult" group (index 3: Favorites, All, News, Adult).
+        const int adult = model.groupIndex(QStringLiteral("Adult"));
+        QVERIFY(adult > ChannelModel::AllGroup);
+        QVERIFY(parental.toggleGroupLock(adult));
+        QVERIFY(parental.isChannelLocked(1));
+        QVERIFY(!parental.blocked(1));        // still unlocked this session
+        parental.lock();
+        QVERIFY(!parental.unlocked());
+        QVERIFY(parental.blocked(1));
+        QVERIFY(parental.blocked(2));
+        QVERIFY(!parental.blocked(0));
+        QVERIFY(model.groups()[adult].toMap().value("locked").toBool());
+
+        // Zapping skips locked channels; search leaves them out.
+        QCOMPARE(model.step(0, 1, ChannelModel::AllGroup), 3);
+        QCOMPARE(model.step(3, -1, ChannelModel::AllGroup), 0);
+        QCOMPARE(model.searchChannels(QStringLiteral("late")).size(), 0);
+        QCOMPARE(model.searchChannels(QStringLiteral("one")).size(), 1);
+
+        // Tuning a locked channel asks for the PIN, then carries on.
+        QSignalSpy pin(&player, &PlayerController::pinRequired);
+        QSignalSpy play(&player, &PlayerController::playRequested);
+        player.tune(1);
+        QCOMPARE(pin.count(), 1);
+        QCOMPARE(play.count(), 0);
+        QVERIFY(!parental.enterPin(QStringLiteral("0000")));
+        QVERIFY(parental.enterPin(QStringLiteral("2468")));
+        player.resumePending();
+        QCOMPARE(play.count(), 1);
+        QCOMPARE(player.currentIndex(), 1);
+        QCOMPARE(model.searchChannels(QStringLiteral("late")).size(), 2);
+
+        // Five wrong tries: a pause before the next one counts.
+        parental.lock();
+        for (int i = 0; i < 5; ++i) QVERIFY(!parental.enterPin(QStringLiteral("1111")));
+        QVERIFY(parental.retryWait() > 0);
+        QVERIFY(!parental.enterPin(QStringLiteral("2468")));   // even the right PIN waits
+
+        // Locks are remembered; a single channel can be locked too.
+        Parental again(&model, &lib);
+        QVERIFY(again.isChannelLocked(2));
+        QVERIFY(again.blocked(2));
+        QVERIFY(!again.isChannelLocked(3));
+        lib.setChannelLocked(model.keyAt(3), true);
+        QVERIFY(again.blocked(3));
+        // Movies: category locks.
+        QVERIFY(again.toggleCategoryLock(0, QStringLiteral("44")));
+        QVERIFY(again.categoryBlocked(0, QStringLiteral("44")));
+        QVERIFY(!again.categoryBlocked(1, QStringLiteral("44")));
+
+        QSettings().remove("parental");
+        model.setBlockedCheck({});
+    }
+
+    void secrets_stay_out_of_settings_where_possible()
+    {
+        AppSettings settings;
+        settings.saveM3u(QStringLiteral("http://h/get.php?username=u&password=secret"));
+        QCOMPARE(settings.m3uLocation(), QStringLiteral("http://h/get.php?username=u&password=secret"));
+        AppSettings reread;   // a new instance reads it back
+        QCOMPARE(reread.m3uLocation(), QStringLiteral("http://h/get.php?username=u&password=secret"));
+        settings.saveXtream(QStringLiteral("h"), QStringLiteral("u"), QStringLiteral("pw"), QStringLiteral("ts"));
+        QCOMPARE(settings.xtreamPassword(), QStringLiteral("pw"));
+        settings.clearSource();
+        QVERIFY(settings.m3uLocation().isEmpty());
+        QVERIFY(settings.xtreamPassword().isEmpty());
+    }
+
+    void playlists_list_and_migration()
+    {
+        QSettings raw;
+        raw.remove("playlists");
+        // Settings from before multiple playlists move into the list.
+        raw.setValue("source/type", "m3u");
+        raw.setValue("source/m3u", "http://www.provider.example/get.php?username=u&password=p");
+        raw.setValue("guide/url", "http://guide.example/epg.xml");
+        raw.setValue("player/lastChannelUrl", "s:42");
+        raw.sync();
+        {
+            AppSettings s;
+            QCOMPARE(s.playlistIds(), QStringList{QStringLiteral("p1")});
+            QCOMPARE(s.activeId(), QStringLiteral("p1"));
+            QCOMPARE(s.activeName(), QStringLiteral("provider.example"));
+            QCOMPARE(s.m3uLocation(), QStringLiteral("http://www.provider.example/get.php?username=u&password=p"));
+            QCOMPARE(s.epgOverride(), QStringLiteral("http://guide.example/epg.xml"));
+            QCOMPARE(s.lastChannelUrl(), QStringLiteral("s:42"));
+            QVERIFY(!QSettings().contains("source/type"));
+
+            // A second playlist, its own settings.
+            const QString id = s.createPlaylist(QStringLiteral("Backup"));
+            QCOMPARE(id, QStringLiteral("p2"));
+            s.setActive(id);
+            QVERIFY(!s.hasSource());
+            s.saveXtream(QStringLiteral("http://x.example:8080"), QStringLiteral("me"), QStringLiteral("pw"), QStringLiteral("ts"));
+            QCOMPARE(s.sourceType(), QStringLiteral("xtream"));
+            QCOMPARE(s.xtreamPassword(), QStringLiteral("pw"));
+            QVERIFY(s.epgOverride().isEmpty());
+            s.setLastChannelUrl(QStringLiteral("s:7"));
+            s.setActive(QStringLiteral("p1"));
+            QCOMPARE(s.sourceType(), QStringLiteral("m3u"));
+            QCOMPARE(s.lastChannelUrl(), QStringLiteral("s:42"));
+            const QVariantList list = s.playlists();
+            QCOMPARE(list.size(), 2);
+            QVERIFY(list[0].toMap().value("active").toBool());
+            QCOMPARE(list[1].toMap().value("name").toString(), QStringLiteral("Backup"));
+            s.renamePlaylist(QStringLiteral("p2"), QStringLiteral("Spare"));
+            s.movePlaylist(QStringLiteral("p2"), -1);
+            QCOMPARE(s.playlistIds(), (QStringList{QStringLiteral("p2"), QStringLiteral("p1")}));
+            QCOMPARE(s.playlistName(QStringLiteral("p2")), QStringLiteral("Spare"));
+            // Removing the active one leaves none active.
+            s.removePlaylist(QStringLiteral("p1"));
+            QVERIFY(s.activeId().isEmpty());
+            QCOMPARE(s.playlistIds(), QStringList{QStringLiteral("p2")});
+        }
+        AppSettings again;   // opens on the remaining playlist
+        QCOMPARE(again.activeId(), QStringLiteral("p2"));
+        QCOMPARE(again.xtreamUser(), QStringLiteral("me"));
+        QSettings().remove("playlists");
+    }
+
+    void schedule_belongs_to_playlist()
+    {
+        QTemporaryDir dir;
+        ChannelModel model;
+        model.setPlaylist(M3uParser::parse("#EXTM3U\n#EXTINF:-1,One\nhttp://127.0.0.1:1/a.ts\n"));
+        ScheduleService schedule(&model, nullptr, dir.path(), dir.filePath("R"), QStringLiteral("p1"));
+        QSignalSpy due(&schedule, &ScheduleService::reminderDue);
+        const double now = double(QDateTime::currentMSecsSinceEpoch());
+        const QVariantMap later{{"title", QStringLiteral("Later")}, {"start", now + 7200000}, {"stop", now + 9000000}};
+        schedule.addReminder(0, later);
+        QCOMPARE(schedule.markFor(0, later.value("start").toDouble()), QStringLiteral("reminder"));
+        schedule.setPlaylist(QStringLiteral("p2"));   // same key, other playlist: not marked
+        QVERIFY(schedule.markFor(0, later.value("start").toDouble()).isEmpty());
+        QCOMPARE(schedule.items().first().toMap().value("globalIndex").toInt(), -1);
+        // A recording due while another playlist is open is missed.
+        schedule.setPlaylist(QStringLiteral("p1"));
+        const QVariantMap soon{{"title", QStringLiteral("Soon")}, {"start", now + 30000}, {"stop", now + 600000}};
+        const QString id = schedule.addRecording(0, soon);
+        QCOMPARE(schedule.item(id).value("status").toString(), QStringLiteral("recording"));
+        schedule.stopRecording(id);
+        const QVariantMap next{{"title", QStringLiteral("Next")}, {"start", now + 3600000}, {"stop", now + 5400000}};
+        const QString id2 = schedule.addRecording(0, next);
+        schedule.setPlaylist(QStringLiteral("p2"));
+        schedule.tick();
+        QCOMPARE(schedule.item(id2).value("status").toString(), QStringLiteral("scheduled"));   // not due yet
+    }
+
+    void other_playlists_for_multiview()
+    {
+        QSettings().remove("playlists");
+        QTemporaryDir dir;
+        QFile m3u(dir.filePath("second.m3u"));
+        QVERIFY(m3u.open(QIODevice::WriteOnly));
+        m3u.write("#EXTM3U\n"
+                  "#EXTINF:-1 tvg-chno=\"1\" group-title=\"News\",Second News\nhttp://two/1.ts\n"
+                  "#EXTINF:-1 tvg-chno=\"2\" group-title=\"Adult\",Late\nhttp://two/2.ts\n"
+                  "#EXTINF:-1 tvg-chno=\"3\" group-title=\"News\",Hidden One\nhttp://two/3.ts\n"
+                  "#EXTINF:-1 tvg-chno=\"4\" group-title=\"Sport\",Second Sport\nhttp://two/4.ts\n");
+        m3u.close();
+
+        AppSettings settings;
+        settings.saveM3u(QStringLiteral("http://one/list.m3u"));          // p1, being watched
+        const QString p2 = settings.createPlaylist(QStringLiteral("Second"));
+        const QString p1 = settings.activeId();
+        settings.setActive(p2);
+        settings.saveM3u(dir.filePath("second.m3u"));
+        settings.setActive(p1);
+        // The second playlist's own choices: one hidden channel, a locked group, a renamed channel.
+        QDir().mkpath(Session::storageDir(dir.path(), p2));
+        QFile lib(Session::storageDir(dir.path(), p2) + "/library.json");
+        QVERIFY(lib.open(QIODevice::WriteOnly));
+        {
+            Channel c3, c4;
+            c3.url = QStringLiteral("http://two/3.ts");
+            c4.url = QStringLiteral("http://two/4.ts");
+            QJsonObject o;
+            o.insert("hiddenChannels", QJsonObject{{ChannelModel::channelKey(c3), "Hidden One"}});
+            o.insert("lockedGroups", QJsonArray{"Adult"});
+            o.insert("channelNames", QJsonObject{{ChannelModel::channelKey(c4), "Sport HD"}});
+            lib.write(QJsonDocument(o).toJson());
+        }
+        lib.close();
+
+        auto keyOf = [](const char *url) { Channel c; c.url = QString::fromLatin1(url); return ChannelModel::channelKey(c); };
+        OtherPlaylists others(&settings, dir.path());
+        others.ensure(p1);                         // the one being watched: nothing to do
+        QVERIFY(others.state(p1).isEmpty());
+        others.ensure(p2);
+        QTRY_COMPARE(others.state(p2), QStringLiteral("ready"));
+        const QVariantList all = others.channels(p2, QString());
+        QCOMPARE(all.size(), 3);                   // hidden one left out
+        QCOMPARE(all[2].toMap().value("name").toString(), QStringLiteral("Sport HD"));
+        QCOMPARE(others.channels(p2, QStringLiteral("sport")).size(), 1);
+        QCOMPARE(others.channels(p2, QStringLiteral("2")).first().toMap().value("name").toString(), QStringLiteral("Late"));
+        const QVariantMap late = others.info(p2, keyOf("http://two/2.ts"));
+        QCOMPARE(late.value("url").toString(), QStringLiteral("http://two/2.ts"));
+        QVERIFY(late.value("locked").toBool());
+        QVERIFY(others.isLocked(p2, keyOf("http://two/2.ts")));
+        // Zapping skips shown and (when asked) locked channels.
+        QCOMPARE(others.step(p2, keyOf("http://two/1.ts"), 1, {}, true), keyOf("http://two/4.ts"));
+        QCOMPARE(others.step(p2, keyOf("http://two/1.ts"), 1, {}, false), keyOf("http://two/2.ts"));
+        QCOMPARE(others.step(p2, keyOf("http://two/4.ts"), 1, {keyOf("http://two/1.ts")}, true), QString());
+        // Removing the playlist forgets its channels.
+        settings.removePlaylist(p2);
+        QVERIFY(others.state(p2).isEmpty());
+        QSettings().remove("playlists");
+    }
+
+    void backup_round_trip()
+    {
+        QTemporaryDir dir;
+        const QString data = dir.path() + QStringLiteral("/data");
+        QDir().mkpath(data);
+        QString file;
+        {
+            QSettings().clear();
+            AppSettings settings;
+            settings.saveM3u(QStringLiteral("http://provider.example/get.php?username=a&password=b"));
+            settings.setPictureShape(QStringLiteral("4:3"));
+            settings.setUserAgent(QStringLiteral("MyBox/1.0"));
+            const QString id = settings.activeId();
+            QDir().mkpath(data + QStringLiteral("/playlists/") + id);
+            UserLibrary library(data + QStringLiteral("/playlists/") + id + QStringLiteral("/library.json"));
+            library.setFavorite(QStringLiteral("s:7"), true);
+            library.addRecent(QStringLiteral("s:9"));
+            QFile sched(data + QStringLiteral("/schedule.json"));
+            QVERIFY(sched.open(QIODevice::WriteOnly));
+            sched.write("{\"items\":[]}");
+            sched.close();
+
+            Backup backup(&settings, &library, data);
+            file = dir.path() + QStringLiteral("/b");
+            QCOMPARE(backup.saveTo(QUrl::fromLocalFile(file).toString()), QString());
+            file += QStringLiteral(".relaybackup");
+            QVERIFY(QFile::exists(file));
+            const QVariantMap d = backup.describe(file);
+            QVERIFY(d.value("ok").toBool());
+            QCOMPARE(d.value("playlists").toStringList().size(), 1);
+            // Not a backup: refused.
+            QFile junk(dir.path() + QStringLiteral("/junk.json"));
+            QVERIFY(junk.open(QIODevice::WriteOnly));
+            junk.write("{\"settings\":{}}");
+            junk.close();
+            QVERIFY(!backup.restoreFrom(junk.fileName()).isEmpty());
+            QCOMPARE(backup.restoreFrom(file), QString());
+        }
+        // Everything changes before the restart…
+        QSettings().clear();
+        QFile::remove(data + QStringLiteral("/schedule.json"));
+        QDir(data + QStringLiteral("/playlists")).removeRecursively();
+        // …and comes back when it's applied.
+        QVERIFY(Backup::applyPending(data));
+        QVERIFY(!Backup::applyPending(data));          // only once
+        AppSettings settings;
+        QCOMPARE(settings.playlistIds().size(), 1);
+        QCOMPARE(settings.m3uLocation(), QStringLiteral("http://provider.example/get.php?username=a&password=b"));
+        QCOMPARE(settings.pictureShape(), QStringLiteral("4:3"));
+        QCOMPARE(settings.userAgent(), QStringLiteral("MyBox/1.0"));
+        QCOMPARE(AppSettings::effectiveUserAgent(), QStringLiteral("MyBox/1.0"));
+        UserLibrary library(data + QStringLiteral("/playlists/") + settings.activeId() + QStringLiteral("/library.json"));
+        QVERIFY(library.isFavorite(QStringLiteral("s:7")));
+        QCOMPARE(library.recent().value(0), QStringLiteral("s:9"));
+        QVERIFY(QFile::exists(data + QStringLiteral("/schedule.json")));
+        settings.clearSource();
+        QSettings().clear();
+    }
+
+    void favorites_lists()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("library.json"));
+        QString sportsId;
+        {
+            UserLibrary library(path);
+            ChannelModel model;
+            model.setLibrary(&library);
+            model.setPlaylist(M3uParser::parse(sample()));
+            const int firstPlaylistGroup = ChannelModel::AllGroup + 1;
+            const QString firstName = model.groupName(firstPlaylistGroup);
+
+            const int sports = model.createList(QStringLiteral("Sports"));
+            QCOMPARE(sports, ChannelModel::AllGroup + 1);          // right after All channels
+            QVERIFY(model.isListGroup(sports));
+            QCOMPARE(model.groupLabel(sports), QStringLiteral("Sports"));
+            QCOMPARE(model.groupName(sports + 1), firstName);      // playlist groups follow
+            QCOMPARE(model.createList(QStringLiteral("  ")), -1);
+            sportsId = model.groupName(sports);
+            const int kids = model.createList(QStringLiteral("Kids"));
+            QCOMPARE(kids, sports + 1);
+
+            model.setInList(3, sportsId, true);
+            model.setInList(0, sportsId, true);
+            model.setInList(3, sportsId, true);                    // twice: still once
+            QCOMPARE(model.groupCounts().at(sports).toInt(), 2);
+            QCOMPARE(model.listsFor(3).at(0).toMap().value("member").toBool(), true);
+            QCOMPARE(model.listsFor(3).at(1).toMap().value("member").toBool(), false);
+            QCOMPARE(model.listsFor(1).at(0).toMap().value("member").toBool(), false);
+            QVERIFY(!model.isFavorite(3));                         // separate from Favorites
+
+            // Order inside the list, and zapping stays inside it.
+            model.setCurrentGroup(sports);
+            QCOMPARE(model.globalIndexAt(0), 3);
+            QCOMPARE(model.moveChannel(0, 1), 1);
+            QCOMPARE(model.globalIndexAt(0), 0);
+            QCOMPARE(model.step(0, 1, sports), 3);
+            QCOMPARE(model.step(3, 1, sports), 0);
+
+            // Lists move among themselves only; hiding and locking don't apply.
+            QCOMPARE(model.moveGroup(kids, -1), sports);
+            QCOMPARE(model.groupLabel(sports), QStringLiteral("Kids"));
+            QCOMPARE(model.moveGroup(sports + 1, 1), sports + 1);  // can't go below a playlist group
+            model.hideGroup(sportsId);
+            QVERIFY(model.groupIndex(sportsId) > 0);
+            model.renameGroup(model.groupIndex(sportsId), QStringLiteral("Football"));
+            QCOMPARE(model.groupLabel(model.groupIndex(sportsId)), QStringLiteral("Football"));
+            model.renameGroup(model.groupIndex(sportsId), QString());   // a list needs a name
+            QCOMPARE(model.groupLabel(model.groupIndex(sportsId)), QStringLiteral("Football"));
+
+            // A hidden channel leaves the list (and comes back when unhidden).
+            model.hideChannel(3);
+            QCOMPARE(model.groupCounts().at(model.groupIndex(sportsId)).toInt(), 1);
+            model.unhideChannel(model.keyAt(3));
+            QCOMPARE(model.groupCounts().at(model.groupIndex(sportsId)).toInt(), 2);
+        }
+        {
+            UserLibrary library(path);
+            ChannelModel model;
+            model.setLibrary(&library);
+            model.setPlaylist(M3uParser::parse(sample()));
+            const int g = model.groupIndex(sportsId);
+            QCOMPARE(g, ChannelModel::AllGroup + 2);               // Kids first, as moved
+            QCOMPARE(model.groupLabel(g), QStringLiteral("Football"));
+            model.setCurrentGroup(g);
+            QCOMPARE(model.count(), 2);
+            QCOMPARE(model.globalIndexAt(0), 0);
+            model.setInList(0, sportsId, false);
+            QCOMPARE(model.count(), 1);
+            model.deleteList(g);
+            QCOMPARE(model.groupIndex(sportsId), -1);
+            QCOMPARE(model.currentGroup(), int(ChannelModel::AllGroup));
+            model.deleteList(ChannelModel::AllGroup + 2);          // a playlist group: nothing happens
+            QVERIFY(model.groups().size() > 4);
+        }
+    }
+
+    void portal_parsing()
+    {
+        QCOMPARE(PortalClient::normalizeMac(QStringLiteral("00:1a:79:ab:cd:ef")), QStringLiteral("00:1A:79:AB:CD:EF"));
+        QCOMPARE(PortalClient::normalizeMac(QStringLiteral(" 001A79ABCDEF ")), QStringLiteral("00:1A:79:AB:CD:EF"));
+        QCOMPARE(PortalClient::normalizeMac(QStringLiteral("00-1A-79-AB-CD-EF")), QStringLiteral("00:1A:79:AB:CD:EF"));
+        QCOMPARE(PortalClient::normalizeMac(QStringLiteral("00:1A:79:AB:CD")), QString());
+        QCOMPARE(PortalClient::normalizeMac(QStringLiteral("user@example")), QString());
+
+        auto first = [](const QString &server) { return PortalClient::endpoints(server).value(0).toString(); };
+        QCOMPARE(first(QStringLiteral("http://tv.example:8080/c/")), QStringLiteral("http://tv.example:8080/portal.php"));
+        QCOMPARE(first(QStringLiteral("tv.example:8080")), QStringLiteral("http://tv.example:8080/portal.php"));
+        QCOMPARE(first(QStringLiteral("http://tv.example/stalker_portal/c/index.html")),
+                 QStringLiteral("http://tv.example/stalker_portal/server/load.php"));
+        QCOMPARE(first(QStringLiteral("https://tv.example/stalker_portal")),
+                 QStringLiteral("https://tv.example/stalker_portal/server/load.php"));
+        QCOMPARE(first(QStringLiteral("http://tv.example/custom/load.php?x=1")), QStringLiteral("http://tv.example/custom/load.php"));
+        QCOMPARE(PortalClient::endpoints(QStringLiteral("http://tv.example/c")).size(), 3);
+        QVERIFY(PortalClient::endpoints(QStringLiteral("   ")).isEmpty());
+
+        const QByteArray shake = js("{'js':{'token':'ABC123','random':'x'}}");
+        QCOMPARE(PortalClient::parseToken(shake), QStringLiteral("ABC123"));
+        QCOMPARE(PortalClient::parseToken("<html>not a portal</html>"), QString());
+
+        QStringList order;
+        const auto genres = PortalClient::parseGenres(
+            js("{'js':[{'id':'*','title':'All'},{'id':'1','title':'News'},{'id':2,'title':'Sports'}]}"), &order);
+        QCOMPARE(genres.size(), 2);
+        QCOMPARE(order, QStringList({QStringLiteral("News"), QStringLiteral("Sports")}));
+
+        const QString account = PortalClient::accountId(QStringLiteral("http://tv.example/c/"), QStringLiteral("00:1A:79:AB:CD:EF"));
+        const PlaylistResult r = PortalClient::parseChannels(
+            js("{'js':{'total_items':3,'data':["
+"{'id':'101','name':'News One','number':'5','tv_genre_id':'1','logo':'http://l/1.png','cmd':'ffmpeg http://localhost/ch/101_'},"
+"{'id':102,'name':'Match TV','number':'','tv_genre_id':2,'cmds':[{'url':'ffmpeg http://localhost/ch/102_'}]},"
+"{'id':'103','name':'','cmd':'x'},"
+"{'id':'104','name':'Unsorted','tv_genre_id':'9','cmd':'auto http://direct/104.ts'}]}}"),
+            genres, order, account);
+        QVERIFY(r.error.isEmpty());
+        QCOMPARE(r.channels.size(), 3);
+        QCOMPARE(r.channels[0].number, 5);
+        QCOMPARE(r.channels[0].group, QStringLiteral("News"));
+        QCOMPARE(r.channels[0].tvgId, QStringLiteral("101"));
+        QCOMPARE(r.channels[1].group, QStringLiteral("Sports"));
+        QCOMPARE(r.channels[1].number, 2);
+        QCOMPARE(r.channels[2].group, QStringLiteral("Other"));
+        QVERIFY(PortalClient::isPortalUrl(r.channels[0].url));
+        QVERIFY(!r.channels[0].url.contains(QLatin1Char(' ')));
+        QCOMPARE(QUrl(r.channels[0].url).host(), account);
+        // The key (favorites, last channel) is the portal's channel id.
+        QCOMPARE(ChannelModel::channelKey(r.channels[0]), QStringLiteral("s:101"));
+        QCOMPARE(ChannelModel::channelKey(r.channels[1]), QStringLiteral("s:102"));
+        const QByteArray none = js("{'js':{'data':[]}}");
+        QVERIFY(!PortalClient::parseChannels(none, genres, order, account).error.isEmpty());
+
+        const QByteArray link1 = js("{'js':{'id':'101','cmd':'ffmpeg http://cdn.example/play/live.php?mac=00:1A&stream=101&token=xyz'}}");
+        const QByteArray link2 = js("{'js':{'cmd':'http://cdn.example/101.m3u8'}}");
+        const QByteArray link3 = js("{'js':[]}");
+        QCOMPARE(PortalClient::parseLink(link1), QStringLiteral("http://cdn.example/play/live.php?mac=00:1A&stream=101&token=xyz"));
+        QCOMPARE(PortalClient::parseLink(link2), QStringLiteral("http://cdn.example/101.m3u8"));
+        QCOMPARE(PortalClient::parseLink(link3), QString());
+
+        int count = 0;
+        const QByteArray xml = PortalClient::xmltvFromEpg(
+            js("{'js':{'data':{'101':[{'name':'Morning <News> & more','descr':'Headlines.','start_timestamp':'1700000000','stop_timestamp':1700003600},"
+"{'name':'','start_timestamp':'1700003600','stop_timestamp':'1700007200'}],"
+"'102':[{'name':'The Match','start_timestamp':1700000000,'stop_timestamp':1700007200}]}}}"), &count);
+        QCOMPARE(count, 2);
+        QVERIFY(xml.contains("<channel id=\"101\">"));
+        QVERIFY(xml.contains("start=\"20231114221320 +0000\""));
+        QVERIFY(xml.contains("Morning &lt;News> &amp; more") || xml.contains("Morning &lt;News&gt; &amp; more"));
+        const QByteArray empty = js("{'js':{'data':{}}}");
+        QVERIFY(PortalClient::xmltvFromEpg(empty).isEmpty());
+    }
+
+    void portal_movies_and_series()
+    {
+        const QString account = QStringLiteral("acc1");
+        const QUrl base(QStringLiteral("http://tv.example:8080"));
+        const VodParser::PortalPage page = VodParser::parsePortalPage(js(
+            "{'js':{'total_items':30,'max_page_items':14,'data':["
+            "{'id':'501','name':'Big Film','year':'2019-05-01','rating_imdb':'7.4','description':'Plot.','director':'D','actors':'A, B',"
+            "'genres_str':'Action','time':'125','screenshot_uri':'/stalker_portal/screenshots/1.jpg','cmd':'/media/file_501.mpg',"
+            "'added':'2026-01-02 10:00:00','is_series':'0','series':[]},"
+            "{'id':'800','name':'Old Show','is_series':'1','series':[1,2,'3'],'cmd':'/media/800.mpg'},"
+            "{'id':'802','name':'Quiet Show','is_series':0,'series':[4]},"
+            "{'id':'','name':'No id'}]}}"), QStringLiteral("vod"), QStringLiteral("v10"), account, base);
+        QCOMPARE(page.pages, 3);
+        QCOMPARE(page.movies.size(), 1);
+        QCOMPARE(page.series.size(), 2);   // flagged, or with episode numbers
+        const VodItem &m = page.movies[0];
+        QCOMPARE(m.id, QStringLiteral("501"));
+        QCOMPARE(m.year, QStringLiteral("2019"));
+        QCOMPARE(m.rating, 7.4);
+        QCOMPARE(m.categoryId, QStringLiteral("v10"));
+        QCOMPARE(m.poster, QStringLiteral("http://tv.example:8080/stalker_portal/screenshots/1.jpg"));
+        QVERIFY(m.added > 0);
+        QVERIFY(PortalClient::isPortalUrl(m.url));
+        QCOMPARE(QUrl(m.url).path(), QStringLiteral("/vod"));
+        const QVariantMap info = page.info.value(QStringLiteral("movie:501"));
+        QCOMPARE(info.value("duration").toString(), QStringLiteral("2 h 5 min"));
+        QCOMPARE(info.value("cast").toString(), QStringLiteral("A, B"));
+        QCOMPARE(page.info.value(QStringLiteral("series:800")).value("numbers").toList().size(), 3);
+        QVERIFY(page.series[0].url.isEmpty());
+
+        // The series section's ids get an "s" so they can't clash with the movie section's.
+        const VodParser::PortalPage shows = VodParser::parsePortalPage(js("{'js':{'total_items':1,'max_page_items':14,"
+            "'data':[{'id':'900','name':'Harbor Lights'}]}}"), QStringLiteral("series"), QStringLiteral("s20"), account, base);
+        QCOMPARE(shows.series.size(), 1);
+        QCOMPARE(shows.series[0].id, QStringLiteral("s900"));
+        QCOMPARE(shows.info.value(QStringLiteral("series:s900")).value("movieId").toString(), QStringLiteral("900"));
+
+        // Seasons carrying their episode numbers, and seasons listing episodes.
+        int pages = 0;
+        const QVariantList seasons = VodParser::parsePortalSeasonList(js("{'js':{'total_items':2,'max_page_items':14,'data':["
+            "{'id':'900:2','name':'Season 2','series':[1,2],'cmd':'/media/900_2.mpg'},"
+            "{'id':'900:1','name':'Сезон 1','series':[],'cmd':''}]}}"), &pages);
+        QCOMPARE(pages, 1);
+        QCOMPARE(seasons.size(), 2);
+        QCOMPARE(seasons[0].toMap().value("number").toInt(), 2);
+        QCOMPARE(seasons[1].toMap().value("number").toInt(), 1);
+        const QVariantList fromNumbers = VodParser::portalEpisodes(account, QStringLiteral("s900"), 2,
+            seasons[0].toMap().value("cmd").toString(), seasons[0].toMap().value("numbers").toList());
+        QCOMPARE(fromNumbers.size(), 2);
+        const QVariantMap e1 = fromNumbers[0].toMap();
+        QCOMPARE(e1.value("id").toString(), QStringLiteral("s900:2:1"));
+        QCOMPARE(e1.value("season").toInt(), 2);
+        QCOMPARE(QUrlQuery(QUrl(e1.value("url").toString())).queryItemValue("series"), QStringLiteral("1"));
+
+        const QVariantList listed = VodParser::parsePortalSeasonList(js("{'js':{'total_items':2,'max_page_items':14,'data':["
+            "{'id':'e2','name':'Episode 2','series_number':2,'cmd':'/media/ep2.mpg'},"
+            "{'id':'e1','name':'Pilot','series_number':1,'cmd':'/media/ep1.mpg','description':'It begins.'}]}}"));
+        const QVariantList eps = VodParser::portalEpisodes(account, QStringLiteral("s901"), 1, QString(), listed);
+        QCOMPARE(eps.size(), 2);
+        QCOMPARE(eps[0].toMap().value("title").toString(), QStringLiteral("Pilot"));       // in episode order
+        QCOMPARE(eps[0].toMap().value("plot").toString(), QStringLiteral("It begins."));
+        QCOMPARE(eps[1].toMap().value("title").toString(), QString());                      // "Episode 2" says nothing
+        const QUrl ep1(eps[0].toMap().value("url").toString());
+        QCOMPARE(QUrl::fromPercentEncoding(QUrlQuery(ep1).queryItemValue("cmd", QUrl::FullyEncoded).toLatin1()), QStringLiteral("/media/ep1.mpg"));
+        QVERIFY(!QUrlQuery(ep1).hasQueryItem("series"));
+    }
+
+    void portal_catchup()
+    {
+        // Channels the portal archives get catch-up.
+        QStringList order;
+        const QString account = QStringLiteral("acc1");
+        const PlaylistResult r = PortalClient::parseChannels(js("{'js':{'data':["
+            "{'id':'101','name':'News','tv_archive':'1','tv_archive_duration':'168','cmd':'ffmpeg http://localhost/ch/101_'},"
+            "{'id':'102','name':'Sport','tv_archive':1,'cmd':'ffmpeg http://localhost/ch/102_'},"
+            "{'id':'103','name':'Kids','tv_archive':'0','cmd':'ffmpeg http://localhost/ch/103_'}]}}"), {}, order, account);
+        QCOMPARE(r.channels.size(), 3);
+        QCOMPARE(r.channels[0].catchupType, QStringLiteral("portal"));
+        QCOMPARE(r.channels[0].catchupDays, 7);
+        QCOMPARE(r.channels[1].catchupDays, 3);   // length not given: three days
+        QCOMPARE(r.channels[2].catchupDays, 0);
+        QVERIFY(Catchup::supported(r.channels[0], {}));
+        QVERIFY(!Catchup::supported(r.channels[2], {}));
+        const QString url = Catchup::url(r.channels[0], 1700000000, 1700003600, 1700100000, {});
+        QVERIFY(PortalClient::isPortalUrl(url));
+        QCOMPARE(QUrl(url).path(), QStringLiteral("/archive/101"));
+        QCOMPARE(QUrlQuery(QUrl(url)).queryItemValue("from"), QStringLiteral("1700000000"));
+        QCOMPARE(QUrl(url).host(), account);
+
+        // Programme ids from the guide, and from a day's table.
+        auto known = PortalClient::archiveIdsFromEpg(js("{'js':{'data':{'101':["
+            "{'id':'p1','start_timestamp':'1700000000'},{'id':'p2','start_timestamp':1700003600}]}}}"));
+        QCOMPARE(known.value("101").size(), 2);
+        qint64 start = 0;
+        QCOMPARE(PortalClient::archiveProgramme(known, QStringLiteral("101"), 1700000600, &start), QStringLiteral("p1"));
+        QCOMPARE(start, qint64(1700000000));
+        QCOMPARE(PortalClient::archiveProgramme(known, QStringLiteral("101"), 1700003600), QStringLiteral("p2"));
+        QCOMPARE(PortalClient::archiveProgramme(known, QStringLiteral("101"), 1699999999), QString());
+        QCOMPARE(PortalClient::archiveProgramme(known, QStringLiteral("102"), 1700000600), QString());
+        int pages = 0;
+        const auto table = PortalClient::parseArchiveTable(js("{'js':{'total_items':25,'max_page_items':10,'data':["
+            "{'id':'x1','ch_id':'102','start_timestamp':'1700000000'}]}}"), &pages);
+        QCOMPARE(pages, 3);
+        QCOMPARE(table.value("102").value(1700000000), QStringLiteral("x1"));
+    }
+
+    void tmdb_titles()
+    {
+        auto clean = [](const char *t, const char *y = "") { return TmdbClient::clean(QString::fromUtf8(t), QString::fromUtf8(y)); };
+        QCOMPARE(clean("EN - The Matrix (1999) [4K]").title, QStringLiteral("The Matrix"));
+        QCOMPARE(clean("EN - The Matrix (1999) [4K]").year, QStringLiteral("1999"));
+        QCOMPARE(clean("|EN| Arrival 2016 FHD").title, QStringLiteral("Arrival"));
+        QCOMPARE(clean("|EN| Arrival 2016 FHD").year, QStringLiteral("2016"));
+        QCOMPARE(clean("[FR] Amélie MULTI HEVC").title, QStringLiteral("Amélie"));
+        QCOMPARE(clean("4K-NF: Glass Onion").title, QStringLiteral("Glass Onion"));
+        QCOMPARE(clean("The.Dark.Knight.2008.1080p.BluRay.x264").title, QStringLiteral("The Dark Knight"));
+        QCOMPARE(clean("The.Dark.Knight.2008.1080p.BluRay.x264").year, QStringLiteral("2008"));
+        QCOMPARE(clean("Dune: Part Two", "2024").year, QStringLiteral("2024"));
+        QCOMPARE(clean("Dune: Part Two", "2024").title, QStringLiteral("Dune: Part Two"));
+        const auto br = clean("Blade Runner 2049");
+        QCOMPARE(br.title, QStringLiteral("Blade Runner"));
+        QCOMPARE(br.withNumber, QStringLiteral("Blade Runner 2049"));
+        QCOMPARE(clean("1917").title, QStringLiteral("1917"));          // a year-like title on its own stays
+        QCOMPARE(clean("  ").title, QString());
+
+        const QJsonObject answer = QJsonDocument::fromJson(js("{'results':["
+            "{'title':'The Matrix Resurrections','release_date':'2021-12-16'},"
+            "{'title':'The Matrix','release_date':'1999-03-30'},"
+            "{'title':'The Matrix','release_date':'2021-01-01'}]}")).object();
+        QCOMPARE(TmdbClient::bestMatch(answer, {QStringLiteral("The Matrix"), QStringLiteral("1999"), {}}, false), 1);
+        QCOMPARE(TmdbClient::bestMatch(answer, {QStringLiteral("The Matrix"), QStringLiteral("2020"), {}}, false), 2);   // a year out
+        QCOMPARE(TmdbClient::bestMatch(answer, {QStringLiteral("the matrix"), {}, {}}, false), 1);
+        QCOMPARE(TmdbClient::bestMatch(answer, {QStringLiteral("Matrix Something"), {}, {}}, false), 0);
+        QCOMPARE(TmdbClient::bestMatch(QJsonObject(), {QStringLiteral("X"), {}, {}}, false), -1);
+        const QJsonObject shows = QJsonDocument::fromJson(js("{'results':[{'name':'Other','original_name':'Harbor Lights','first_air_date':'2022-01-01'}]}")).object();
+        QCOMPARE(TmdbClient::bestMatch(shows, {QStringLiteral("Harbor Lights"), {}, {}}, true), 0);
+    }
+
+    void ts_to_hls()
+    {
+        // A synthetic stream: PAT, PMT (H.264 on PID 0x100, AAC on 0x101), then
+        // one video packet every 40 ms carrying the clock, a key frame every second.
+        auto pkt = [](int pid, bool start, int cc, const QByteArray &adapt, const QByteArray &payload) {
+            QByteArray p(188, char(0xFF));
+            p[0] = 0x47;
+            p[1] = char((start ? 0x40 : 0) | ((pid >> 8) & 0x1F));
+            p[2] = char(pid & 0xFF);
+            int pos = 4;
+            if (!adapt.isEmpty()) {
+                p[3] = char(0x30 | (cc & 0xF));
+                p[4] = char(adapt.size());
+                for (int i = 0; i < adapt.size(); ++i) p[5 + i] = adapt[i];
+                pos = 5 + int(adapt.size());
+            } else {
+                p[3] = char(0x10 | (cc & 0xF));
+            }
+            for (int i = 0; i < payload.size() && pos + i < 188; ++i) p[pos + i] = payload[i];
+            return p;
+        };
+        const QByteArray pat = QByteArray::fromHex("00" "00b00d0001c100000001f0000000000000");
+        const QByteArray pmt = QByteArray::fromHex("00" "02b0170001c10000e100f000" "1be100f000" "0fe101f000" "00000000");
+        auto pcrField = [](qint64 ticks90k, bool key) {
+            QByteArray a(7, '\0');
+            a[0] = char(0x10 | (key ? 0x40 : 0));
+            a[1] = char(ticks90k >> 25); a[2] = char(ticks90k >> 17); a[3] = char(ticks90k >> 9);
+            a[4] = char(ticks90k >> 1); a[5] = char(((ticks90k & 1) << 7) | 0x7E); a[6] = 0;
+            return a;
+        };
+        TsSegmenter seg(4.0, 6);
+        QByteArray stream;
+        stream += pkt(0, true, 0, {}, pat);
+        stream += pkt(0x100, false, 0, {}, QByteArray(10, 'x'));   // before the PMT: dropped
+        stream += pkt(0x1000, true, 0, {}, pmt);
+        for (int i = 0; i < 25 * 30; ++i) {                          // 30 seconds
+            const bool key = i % 25 == 0;
+            stream += pkt(0x100, true, i, pcrField(qint64(i) * 3600, key), QByteArray(20, 'v'));
+            stream += pkt(0x101, true, i, {}, QByteArray(20, 'a'));
+        }
+        // In awkward pieces, as from the network.
+        for (int at = 0; at < stream.size(); at += 1000) seg.feed(stream.mid(at, 1000));
+        QCOMPARE(seg.videoPid(), 0x100);
+        QCOMPARE(seg.videoStreamType(), 0x1B);
+        QVERIFY(seg.segments().size() >= 5);
+        QCOMPARE(seg.segments().size(), 6);                          // only the newest kept
+        for (const auto &s : seg.segments()) {
+            QVERIFY(s.duration >= 3.9 && s.duration <= 5.1);         // cut at the next key frame after 4 s
+            QCOMPARE(s.data.size() % 188, 0);
+            QCOMPARE(s.data.left(188), pkt(0, true, 0, {}, pat));    // starts with PAT, PMT
+            QCOMPARE(int(uchar(s.data[188 + 1]) & 0x1F) << 8 | uchar(s.data[188 + 2]), 0x1000);
+            QCOMPARE(int(uchar(s.data[376 + 5])) & 0x40, 0x40);       // then a key frame
+        }
+        const QByteArray list = seg.playlist(QStringLiteral("seg/"));
+        QVERIFY(list.startsWith("#EXTM3U"));
+        QVERIFY(list.contains("#EXT-X-TARGETDURATION:4"));
+        QVERIFY(list.contains("#EXT-X-MEDIA-SEQUENCE:" + QByteArray::number(seg.segments().first().sequence)));
+        QVERIFY(list.contains("seg/" + QByteArray::number(seg.segments().last().sequence) + ".ts"));
+        QVERIFY(!list.contains("#EXT-X-ENDLIST"));
+        QCOMPARE(seg.segment(seg.segments().first().sequence), seg.segments().first().data);
+        QVERIFY(seg.segment(0).isEmpty());                           // dropped long ago
+        QVERIFY(TsSegmenter().playlist(QString()).isEmpty());
+    }
+
+    void cast_devices()
+    {
+        // mDNS: a Chromecast answering the _googlecast._tcp question.
+        auto name = [](const QStringList &labels) {
+            QByteArray out;
+            for (const QString &l : labels) { out += char(l.toUtf8().size()); out += l.toUtf8(); }
+            return out + '\0';
+        };
+        auto rr = [](const QByteArray &owner, int type, const QByteArray &data) {
+            QByteArray r = owner;
+            r += char(type >> 8); r += char(type & 0xFF);
+            r += QByteArray::fromHex("8001" "00000078");
+            r += char(data.size() >> 8); r += char(data.size() & 0xFF);
+            return r + data;
+        };
+        const QByteArray service = name({"_googlecast", "_tcp", "local"});
+        const QByteArray instance = name({"Chromecast-abc123", "_googlecast", "_tcp", "local"});
+        const QByteArray host = name({"abc123", "local"});
+        QByteArray txt;
+        for (const QByteArray kv : {QByteArray("id=abc123"), QByteArray("md=Chromecast Ultra"), QByteArray("fn=Living Room")}) { txt += char(kv.size()); txt += kv; }
+        QByteArray packet = QByteArray::fromHex("0000840000000004" "00000000");
+        packet[7] = 1; packet[9] = 0; packet[11] = 3;   // 1 answer, 3 additional
+        packet += rr(service, 12, instance);
+        packet += rr(instance, 33, QByteArray::fromHex("00000000" "1f49") + host);
+        packet += rr(instance, 16, txt);
+        packet += rr(host, 1, QByteArray::fromHex("c0a8010f"));
+        const auto found = CastDiscovery::parseMdns(packet, QHostAddress(QStringLiteral("192.168.1.99")));
+        QCOMPARE(found.size(), 1);
+        QCOMPARE(found[0].name, QStringLiteral("Living Room"));
+        QCOMPARE(found[0].model, QStringLiteral("Chromecast Ultra"));
+        QCOMPARE(found[0].address.toString(), QStringLiteral("192.168.1.15"));
+        QCOMPARE(found[0].port, quint16(8009));
+        QCOMPARE(found[0].kind, QStringLiteral("chromecast"));
+        QVERIFY(CastDiscovery::parseMdns("short", QHostAddress()).isEmpty());
+        const QByteArray q = CastDiscovery::mdnsQuery("_googlecast._tcp.local");
+        QVERIFY(q.contains("\x0b_googlecast\x04_tcp\x05local"));
+
+        // SSDP and the TV's description.
+        QCOMPARE(CastDiscovery::ssdpLocation("HTTP/1.1 200 OK\r\nST: x\r\nLocation: http://192.168.1.20:9197/dmr\r\n\r\n"),
+                 QUrl(QStringLiteral("http://192.168.1.20:9197/dmr")));
+        QVERIFY(CastDiscovery::ssdpSearch().contains("AVTransport:1"));
+        const CastDevice tv = CastDiscovery::parseDescription(
+            "<root><device><friendlyName>[TV] Samsung Q80</friendlyName><modelName>QE55</modelName><serviceList>"
+            "<service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>/rc</controlURL></service>"
+            "<service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>upnp/control/AVTransport1</controlURL></service>"
+            "</serviceList></device></root>", QUrl(QStringLiteral("http://192.168.1.20:9197/dmr")));
+        QCOMPARE(tv.name, QStringLiteral("[TV] Samsung Q80"));
+        QCOMPARE(tv.controlUrl, QUrl(QStringLiteral("http://192.168.1.20:9197/upnp/control/AVTransport1")));
+        QCOMPARE(tv.kind, QStringLiteral("dlna"));
+        QVERIFY(!CastDiscovery::parseDescription("<root><device><friendlyName>Speaker</friendlyName></device></root>",
+                                                 QUrl(QStringLiteral("http://h/d"))).controlUrl.isValid());
+
+        // DLNA requests carry escaped addresses and metadata.
+        const QByteArray didl = DlnaRenderer::didl(QStringLiteral("http://h:1/s/a?x=1&y=2"), QStringLiteral("News <HD> & more"),
+                                                   QStringLiteral("video/mp2t"), true);
+        QVERIFY(didl.contains("http://h:1/s/a?x=1&amp;y=2"));
+        QVERIFY(didl.contains("News &lt;HD&gt; &amp; more"));
+        QVERIFY(didl.contains("http-get:*:video/mp2t:DLNA.ORG_OP=00"));
+        QVERIFY(DlnaRenderer::soapBody(QStringLiteral("Play"), QStringLiteral("<Speed>1</Speed>")).contains("<u:Play xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\"><InstanceID>0</InstanceID><Speed>1</Speed></u:Play>"));
+
+        // Cast protocol messages there and back, two at once and one in pieces.
+        QByteArray buffer = ChromecastClient::frame(QStringLiteral("sender-0"), QStringLiteral("receiver-0"),
+                                                    QStringLiteral("urn:x-cast:com.google.cast.tp.heartbeat"), "{\"type\":\"PING\"}");
+        const QByteArray second = ChromecastClient::frame(QStringLiteral("receiver-0"), QStringLiteral("sender-0"),
+                                                          QStringLiteral("urn:x-cast:com.google.cast.media"), QByteArray(300, 'x'));
+        buffer += second.left(50);
+        auto msgs = ChromecastClient::unframe(buffer);
+        QCOMPARE(msgs.size(), 1);
+        QCOMPARE(msgs[0].source, QStringLiteral("sender-0"));
+        QCOMPARE(msgs[0].destination, QStringLiteral("receiver-0"));
+        QCOMPARE(msgs[0].ns, QStringLiteral("urn:x-cast:com.google.cast.tp.heartbeat"));
+        QCOMPARE(msgs[0].payload, QByteArray("{\"type\":\"PING\"}"));
+        buffer += second.mid(50);
+        msgs = ChromecastClient::unframe(buffer);
+        QCOMPARE(msgs.size(), 1);
+        QCOMPARE(msgs[0].payload.size(), 300);   // a long payload (two-byte length)
+        QVERIFY(buffer.isEmpty());
+
+        QCOMPARE(CastService::mimeFor(QStringLiteral("http://p/live/u/p/1.ts"), true), QStringLiteral("video/mp2t"));
+        QCOMPARE(CastService::mimeFor(QStringLiteral("http://p/live/u/p/1"), true), QStringLiteral("video/mp2t"));
+        QCOMPARE(CastService::mimeFor(QStringLiteral("http://p/x/index.m3u8?t=1"), true), QStringLiteral("application/x-mpegurl"));
+        QCOMPARE(CastService::mimeFor(QStringLiteral("http://p/movie/u/p/5.MKV"), false), QStringLiteral("video/x-matroska"));
+        QCOMPARE(CastService::mimeFor(QStringLiteral("http://p/movie/u/p/5"), false), QStringLiteral("video/mp4"));
+    }
+
+    void cast_relay()
+    {
+        // Playlists are rewritten so every part comes through Relay.
+        QStringList seen;
+        const QByteArray out = CastRelay::rewritePlaylist(
+            "#EXTM3U\r\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\r\n#EXTINF:4,\r\nseg1.ts?tok=a\r\n#EXTINF:4,\r\nhttp://cdn.example/x/seg2.ts\r\n",
+            QUrl(QStringLiteral("http://p.example/live/chan/index.m3u8")),
+            [&seen](const QString &target) { seen << target; return QStringLiteral("/u/T/%1.ts").arg(seen.size() - 1); });
+        QCOMPARE(seen, QStringList({QStringLiteral("http://p.example/live/chan/key.bin"),
+                                    QStringLiteral("http://p.example/live/chan/seg1.ts?tok=a"),
+                                    QStringLiteral("http://cdn.example/x/seg2.ts")}));
+        QVERIFY(out.contains("URI=\"/u/T/0.ts\""));
+        QVERIFY(out.contains("\n/u/T/1.ts\n"));
+        QVERIFY(out.contains("\n/u/T/2.ts\n"));
+        QVERIFY(!out.contains('\r'));
+
+        // The relay itself: a stream from a little server, through Relay, with
+        // the channel's user agent going to the provider.
+        QTcpServer provider;
+        QVERIFY(provider.listen(QHostAddress::LocalHost));
+        QByteArray askedWith;
+        connect(&provider, &QTcpServer::newConnection, this, [&] {
+            QTcpSocket *s = provider.nextPendingConnection();
+            connect(s, &QTcpSocket::readyRead, s, [s, &askedWith] {
+                askedWith += s->readAll();
+                if (!askedWith.contains("\r\n\r\n")) return;
+                s->write("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 1880\r\nConnection: close\r\n\r\n");
+                s->write(QByteArray(1880, 0x47));
+                s->disconnectFromHost();
+            });
+        });
+        CastRelay relay;
+        const QString path = relay.add({QStringLiteral("http://127.0.0.1:%1/live/1.ts").arg(provider.serverPort()),
+                                        QStringLiteral("TestAgent/1"), QString(), false, QStringLiteral("video/mp2t")});
+        QVERIFY(path.startsWith(QLatin1String("/s/")));
+        const QString url = relay.urlFor(path, QHostAddress::LocalHost);
+        QVERIFY(url.startsWith(QLatin1String("http://127.0.0.1:")));
+        QNetworkAccessManager net;
+        QNetworkRequest req{QUrl(url)};
+        req.setRawHeader("getcontentFeatures.dlna.org", "1");
+        QNetworkReply *r = net.get(req);
+        QTRY_VERIFY_WITH_TIMEOUT(r->isFinished(), 5000);
+        QCOMPARE(r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+        QCOMPARE(r->readAll(), QByteArray(1880, 0x47));
+        QCOMPARE(r->header(QNetworkRequest::ContentTypeHeader).toString(), QStringLiteral("video/mp2t"));
+        QVERIFY(r->hasRawHeader("contentFeatures.dlna.org"));
+        QCOMPARE(r->rawHeader("Access-Control-Allow-Origin"), QByteArray("*"));
+        QVERIFY(askedWith.contains("User-Agent: TestAgent/1"));
+        r->deleteLater();
+
+        // Unknown or stopped streams aren't served.
+        QNetworkReply *bad = net.get(QNetworkRequest(QUrl(relay.urlFor(QStringLiteral("/s/nope/stream"), QHostAddress::LocalHost))));
+        QTRY_VERIFY_WITH_TIMEOUT(bad->isFinished(), 5000);
+        QCOMPARE(bad->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 404);
+        relay.remove(path);
+        QNetworkReply *gone = net.get(QNetworkRequest(QUrl(url)));
+        QTRY_VERIFY_WITH_TIMEOUT(gone->isFinished(), 5000);
+        QCOMPARE(gone->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 404);
+        bad->deleteLater();
+        gone->deleteLater();
+    }
+
+    void trakt_watched()
+    {
+        const QJsonArray movies = QJsonDocument::fromJson(js("[{'plays':2,'movie':{'title':'Arrival','year':2016,'ids':{'trakt':1}}},"
+                                                             "{'movie':{'title':''}}]")).array();
+        const QJsonArray shows = QJsonDocument::fromJson(js("[{'show':{'title':'Harbor Lights','year':2022},'seasons':["
+                                                            "{'number':1,'episodes':[{'number':1},{'number':2}]},{'number':2,'episodes':[{'number':5}]}]}]")).array();
+        const QVariantMap w = TraktService::parseWatched(movies, shows);
+        QCOMPARE(w.value("movies").toList().size(), 1);
+        QCOMPARE(w.value("movies").toList()[0].toMap().value("year").toInt(), 2016);
+        const QVariantList eps = w.value("episodes").toList();
+        QCOMPARE(eps.size(), 3);
+        QCOMPARE(eps[2].toMap().value("season").toInt(), 2);
+        QCOMPARE(eps[2].toMap().value("episode").toInt(), 5);
+        QCOMPARE(TraktService::titleKey(QStringLiteral("|EN| Arrival 2016 FHD")), QStringLiteral("arrival"));
+        QCOMPARE(VodService::matchKey(QStringLiteral("EN - Harbor Lights [4K]")), QStringLiteral("harborlights"));
+    }
+
+    void series_recording()
+    {
+        QTemporaryDir dir;
+        const qint64 now = QDateTime::currentSecsSinceEpoch();
+        const qint64 base = now - now % 3600 + 7200;   // two hours from the top of this hour
+        auto prog = [](qint64 start, const char *title, const char *episode) {
+            auto stamp = [](qint64 t) { return QDateTime::fromSecsSinceEpoch(t).toUTC().toString(QStringLiteral("yyyyMMddHHmmss")); };
+            return QStringLiteral("<programme channel=\"one\" start=\"%1 +0000\" stop=\"%2 +0000\"><title>%3</title>%4</programme>\n")
+                .arg(stamp(start), stamp(start + 3600), QLatin1String(title),
+                     *episode ? QStringLiteral("<episode-num system=\"onscreen\">%1</episode-num>").arg(QLatin1String(episode)) : QString());
+        };
+        const QString guide = dir.filePath(QStringLiteral("guide.xml"));
+        {
+            QFile f(guide);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(("<?xml version=\"1.0\"?><tv><channel id=\"one\"><display-name>One</display-name></channel>"
+                     + prog(base, "Harbor Lights", "S1 E1") + prog(base + 3600, "Other Show", "")
+                     + prog(base + 7200, "HARBOR LIGHTS", "S1 E2") + prog(base + 86400, "Harbor Lights", "S1 E1")   // a repeat
+                     + prog(base + 90000, "Harbor Lights", "S1 E3") + "</tv>").toUtf8());
+        }
+        ChannelModel model;
+        model.setPlaylist(M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1 tvg-id=\"one\" group-title=\"A\",One\nhttp://127.0.0.1:1/one.ts\n"
+            "#EXTINF:-1 group-title=\"A\",Two\nhttp://127.0.0.1:1/two.ts\n"));
+        EpgService epg(dir.filePath(QStringLiteral("guide.sqlite")));
+        QSignalSpy updated(&epg, &EpgService::guideUpdated);
+        epg.refresh(model.originalChannels(), {guide}, true);
+        QTRY_COMPARE_WITH_TIMEOUT(updated.count(), 1, 10000);
+        model.setEpgIds(epg.resolve(model.originalChannels()));
+
+        QString firstId;
+        {
+            ScheduleService schedule(&model, &epg, dir.path(), dir.filePath("R"), QStringLiteral("p1"));
+            const QVariantMap show{{"title", QStringLiteral("Harbor Lights")}, {"start", double(base) * 1000}, {"stop", double(base + 3600) * 1000}};
+            QCOMPARE(schedule.seriesFor(0, QStringLiteral("harbor lights")), QString());
+            const QString id = schedule.addSeries(0, show);
+            QVERIFY(!id.isEmpty());
+            QCOMPARE(schedule.addSeries(0, show), id);                         // once per show and channel
+            QCOMPARE(schedule.seriesFor(0, QStringLiteral("harbor lights")), id);
+            QCOMPARE(schedule.seriesFor(1, QStringLiteral("Harbor Lights")), QString());
+            // Three episodes; the repeat of S1 E1 and the other show are left out.
+            QCOMPARE(schedule.items().size(), 3);
+            QCOMPARE(schedule.series().at(0).toMap().value("upcoming").toInt(), 3);
+            QCOMPARE(qint64(schedule.series().at(0).toMap().value("next").toDouble() / 1000), base);
+            QCOMPARE(schedule.markFor(0, double(base + 7200) * 1000), QStringLiteral("recording"));
+            QCOMPARE(schedule.markFor(0, double(base + 86400) * 1000), QString());
+            QVERIFY(schedule.items().last().toMap().value("title").toString().contains(QStringLiteral("S1 E1")));
+            QVERIFY(schedule.items().last().toMap().value("series").toBool());
+
+            // Cancelling one airing sticks; the rule doesn't put it back.
+            firstId = schedule.idFor(0, double(base) * 1000);
+            schedule.remove(firstId, false);
+            schedule.applySeries();
+            QCOMPARE(schedule.items().size(), 3);                               // the repeat takes the cancelled episode's place
+            QCOMPARE(schedule.markFor(0, double(base) * 1000), QString());
+            QCOMPARE(schedule.markFor(0, double(base + 86400) * 1000), QStringLiteral("recording"));
+            schedule.applySeries();
+            QCOMPARE(schedule.items().size(), 3);
+        }
+        {
+            // Rules and their recordings survive a restart.
+            ScheduleService schedule(&model, &epg, dir.path(), dir.filePath("R"), QStringLiteral("p1"));
+            QCOMPARE(schedule.series().size(), 1);
+            QCOMPARE(schedule.items().size(), 3);
+            schedule.applySeries();
+            QCOMPARE(schedule.items().size(), 3);
+            // A one-off recording isn't touched when the rule goes.
+            QVERIFY(!schedule.addRecording(0, {{"title", QStringLiteral("Other Show")}, {"start", double(base + 3600) * 1000},
+                                               {"stop", double(base + 7200) * 1000}}).isEmpty());
+            schedule.removeSeries(schedule.series().at(0).toMap().value("id").toString());
+            QCOMPARE(schedule.series().size(), 0);
+            QCOMPARE(schedule.items().size(), 1);
+            QCOMPARE(schedule.items().at(0).toMap().value("title").toString(), QStringLiteral("Other Show"));
+            QCOMPARE(schedule.seriesFor(0, QStringLiteral("Harbor Lights")), QString());
+        }
+        {
+            // Another playlist is open: its rules wait.
+            ScheduleService schedule(&model, &epg, dir.path(), dir.filePath("R"), QStringLiteral("p2"));
+            QVERIFY(!schedule.addSeries(0, {{"title", QStringLiteral("Harbor Lights")}}).isEmpty());
+            QCOMPARE(schedule.series().size(), 1);
+            schedule.setPlaylist(QStringLiteral("p1"));
+            schedule.applySeries();
+            QCOMPARE(schedule.seriesFor(0, QStringLiteral("Harbor Lights")), QString());
+            QCOMPARE(schedule.items().size(), 4);   // p2's three + the one-off
+        }
+    }
+
+    void changed_keys_are_saved()
+    {
+        QSettings().clear();
+        {
+            AppSettings settings;
+            QSignalSpy changed(&settings, &AppSettings::keysChanged);
+            QVERIFY(settings.keys().isEmpty());
+            settings.setKey(QStringLiteral("guide"), Qt::Key_T);
+            settings.setKey(QStringLiteral("mute"), Qt::Key_F2);
+            QCOMPARE(changed.count(), 2);
+            settings.setUiScale(130);
+            settings.setUiScale(500);
+            QCOMPARE(settings.uiScale(), 200);
+            settings.setExternalPlayer(QStringLiteral("file:///opt/vlc/vlc"));
+            QCOMPARE(settings.externalPlayer(), QStringLiteral("/opt/vlc/vlc"));
+        }
+        AppSettings settings;
+        QCOMPARE(settings.keys().value("guide").toInt(), int(Qt::Key_T));
+        QCOMPARE(settings.keys().size(), 2);
+        settings.setKey(QStringLiteral("guide"), 0);
+        QCOMPARE(settings.keys().size(), 1);
+        settings.resetKeys();
+        QVERIFY(settings.keys().isEmpty());
+        QCOMPARE(settings.uiScale(), 200);
+        QSettings().clear();
+    }
+
+    void guide_addresses_split()
+    {
+        QCOMPARE(AppSettings::splitAddresses(QStringLiteral("http://a/x.xml.gz, http://b/y.xml")),
+                 QStringList({QStringLiteral("http://a/x.xml.gz"), QStringLiteral("http://b/y.xml")}));
+        // A comma inside an address stays.
+        QCOMPARE(AppSettings::splitAddresses(QStringLiteral("http://a/epg?ids=1,2;http://b/e")),
+                 QStringList({QStringLiteral("http://a/epg?ids=1,2"), QStringLiteral("http://b/e")}));
+        QCOMPARE(AppSettings::splitAddresses(QStringLiteral("  \nhttp://a\n\nC:\\guide.xml\n")),
+                 QStringList({QStringLiteral("http://a"), QStringLiteral("C:\\guide.xml")}));
+    }
+
+private:
+    static QByteArray sample()
+    {
+        return "#EXTM3U\n"
+               "#EXTINF:-1 group-title=\"News\",News One\nhttp://s/1\n"
+               "#EXTINF:-1 group-title=\"Sports\",Sports One\nhttp://s/2\n"
+               "#EXTINF:-1 group-title=\"News\",News Two\nhttp://s/3\n"
+               "#EXTINF:-1 group-title=\"Sports\",Sports Two\nhttp://s/4\n";
+    }
+
+
+};
+
+QTEST_GUILESS_MAIN(TestSources)
+#include "test_sources.moc"

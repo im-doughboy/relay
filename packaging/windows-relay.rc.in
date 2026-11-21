@@ -1,0 +1,32 @@
+// Icon and version details for relay.exe (filled in by CMake).
+#include <winver.h>
+
+IDI_ICON1 ICON "@RELAY_ICON_ICO@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "Relay\0"
+            VALUE "FileDescription",  "Relay IPTV player\0"
+            VALUE "FileVersion",      "@PROJECT_VERSION@\0"
+            VALUE "InternalName",     "relay\0"
+            VALUE "OriginalFilename", "relay.exe\0"
+            VALUE "ProductName",      "Relay\0"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
