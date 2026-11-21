@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Relay VERSION 0.1.0 LANGUAGES CXX)
+project(Relay VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,7 @@ add_library(relay_core STATIC
     src/app/AppSettings.h          src/app/AppSettings.cpp
     src/app/Session.h              src/app/Session.cpp
     src/app/Trakt.h               src/app/Trakt.cpp
+    src/app/Updater.h             src/app/Updater.cpp
     src/cast/TsSegmenter.h        src/cast/TsSegmenter.cpp
     src/cast/CastRelay.h          src/cast/CastRelay.cpp
     src/cast/CastDevices.h        src/cast/CastDevices.cpp
@@ -148,6 +149,7 @@ set(RELAY_QML_FILES
         qml/Keymap.qml
         qml/KeysDialog.qml
         qml/CastPicker.qml
+        qml/UpdateBanner.qml
         qml/CastBar.qml
     qml/PinDialog.qml
     qml/PlaylistPicker.qml

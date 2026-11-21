@@ -3,6 +3,7 @@
 #include "app/Log.h"
 #include "app/Session.h"
 #include "app/Trakt.h"
+#include "app/Updater.h"
 #include "cast/CastService.h"
 #include "app/UserLibrary.h"
 #include "app/Parental.h"
@@ -206,6 +207,7 @@ int main(int argc, char *argv[])
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Epg", epg);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Vod", vod);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Trakt", trakt);
+    qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Updates", new Updater(&app));
     auto *cast = new CastService(&app);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Cast", cast);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Catchup", catchup);

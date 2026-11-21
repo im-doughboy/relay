@@ -426,6 +426,24 @@ Limits: casting uses the provider's own stream, so channels with H.265 or MPEG-2
 on devices that support them (most TVs do; older Chromecasts don't). Subtitles and audio track
 choices aren't sent to the TV.
 
+## Updates
+
+Relay checks GitHub for a newer release a minute after it starts and then once a day (Settings →
+Updates turns this off, and **Check now** checks straight away). When there's one, a card in the
+bottom-right corner offers it: **Update now** downloads the installer, checks it against the size
+and SHA-256 GitHub lists for it, and runs it quietly; Relay closes, updates in place and opens
+again, with your playlists and settings kept. **Later** stops offering that version; ✕ hides the
+card until next time. A desktop shortcut you removed stays removed.
+
+While the repository is private, GitHub only shows its releases to people signed in, so Relay
+needs a token: github.com → Settings → Developer settings → Fine-grained tokens → Generate new
+token, with access to only the relay repository and **Contents: Read-only**. Paste it in
+Settings → Updates (it's kept in Windows Credential Manager). Anyone else you give Relay to would
+need one too, which is a reason to make the repository public before sharing it.
+
+On macOS and Linux there's no installer to run yet: Relay tells you about the new version and
+opens its release page.
+
 ## Using the mouse
 
 - **Menu bar:** move the mouse over the picture and a bar appears along the top with Channels,
@@ -447,7 +465,8 @@ choices aren't sent to the TV.
   channel in the selected tile, change channel, add, remove, layout and watch full screen.
   Click a tile to select it; double-click to watch it full screen.
 - **Lists:** right-click a channel or group for favorite, rename, hide, lock and move.
-- Every full-screen view has a ✕ in the top-right corner (same as Esc).
+- Every full-screen view has a ✕ in the top-right corner (same as Esc), Settings included
+  (on its inner pages, such as hidden channels, the same button goes back a step).
 - **Settings** opens without putting the cursor in a text box (so the S that opened it, or a
   stray key, can't change your playlist address): click a field, or press Tab / ↓ / Enter.
 
@@ -554,7 +573,9 @@ Uninstalling asks whether to remove your data too (recordings are always kept). 
 update by extracting the new one over the old folder.
 
 The version number comes from `project(Relay VERSION …)` in CMakeLists.txt; raise it before
-packaging a new release. MSYS2's mpv is GPL-licensed: fine for yourself, but giving the packaged
+packaging a new release. **Releasing:** raise the version, commit, then `git tag v<version>` and
+`git push origin v<version>`. GitHub builds it and publishes a release with the installer, and
+installed copies of Relay offer it as an update. MSYS2's mpv is GPL-licensed: fine for yourself, but giving the packaged
 app to others means following the GPL (or switching to an LGPL libmpv build).
 
 ### macOS package

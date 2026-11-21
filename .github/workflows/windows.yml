@@ -70,6 +70,26 @@ jobs:
       - name: Package (zip and installer)
         run: ./packaging/package-windows.sh
 
+      # The way Relay's updater runs it: quietly, over an installed copy. A
+      # desktop shortcut you removed must stay removed.
+      - name: Try the installer (install, quiet update, uninstall)
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\Relay-*-setup.exe).FullName
+          $dir = "$env:LOCALAPPDATA\Programs\Relay"
+          $desk = [Environment]::GetFolderPath('Desktop') + '\Relay.lnk'
+          Start-Process $setup -ArgumentList '/S' -Wait
+          if (!(Test-Path "$dir\relay.exe") -or !(Test-Path "$dir\uninstall.exe")) { throw 'install: files missing' }
+          if (!(Test-Path $desk)) { throw 'install: no desktop shortcut' }
+          Remove-Item $desk
+          Start-Process $setup -ArgumentList '/S' -Wait
+          if (!(Test-Path "$dir\relay.exe")) { throw 'update: files missing' }
+          if (Test-Path $desk) { throw 'update: the removed desktop shortcut came back' }
+          # _?= keeps the uninstaller in place so -Wait really waits.
+          Start-Process "$dir\uninstall.exe" -ArgumentList "/S _?=$dir" -Wait
+          if (Test-Path "$dir\relay.exe") { throw 'uninstall: files left' }
+          Write-Host 'Installer OK'
+
       - name: Keep the installer and the zip with this run
         uses: actions/upload-artifact@v6
         with:

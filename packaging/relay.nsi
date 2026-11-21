@@ -4,7 +4,8 @@
 ; Installs for the current user (no administrator prompt) into
 ; %LOCALAPPDATA%\Programs\Relay. Running a newer installer updates in place:
 ; it closes Relay, removes the old program files with the old uninstaller and
-; installs the new ones. Your playlists, settings, guide and recordings are
+; installs the new ones (Relay's updater runs it with /S /RELAUNCH: quietly,
+; then Relay opens again). Your playlists, settings, guide and recordings are
 ; stored elsewhere and are never touched by an update.
 
 Unicode true
@@ -14,6 +15,7 @@ RequestExecutionLevel user
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "Sections.nsh"
 
 !define APP_NAME "Relay"
 !define APP_EXE "relay.exe"
@@ -94,6 +96,33 @@ SectionEnd
 Section "Desktop shortcut" SecDesktop
     CreateShortcut "$DESKTOP\Relay.lnk" "$INSTDIR\${APP_EXE}"
 SectionEnd
+
+; ---- quiet updates (Relay's own updater runs: setup.exe /S /RELAUNCH) -------
+Var Relaunch
+
+Function .onInit
+    StrCpy $Relaunch 0
+    ${GetParameters} $0
+    ClearErrors
+    ${GetOptions} $0 "/RELAUNCH" $1
+    ${IfNot} ${Errors}
+        StrCpy $Relaunch 1
+    ${EndIf}
+    ; A quiet update keeps your choice about the desktop shortcut: only make
+    ; one if there was one.
+    ${If} ${Silent}
+    ${AndIf} ${FileExists} "$INSTDIR\uninstall.exe"
+    ${AndIfNot} ${FileExists} "$DESKTOP\Relay.lnk"
+        !insertmacro UnselectSection ${SecDesktop}
+    ${EndIf}
+FunctionEnd
+
+; Open Relay again after an update it started.
+Function .onInstSuccess
+    ${If} $Relaunch == 1
+        Exec '"$INSTDIR\${APP_EXE}"'
+    ${EndIf}
+FunctionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
     !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "The Relay player."

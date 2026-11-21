@@ -1012,6 +1012,88 @@ FocusScope {
             }
         }
 
+        // Updates
+        Column {
+            id: updatesBox
+            width: card.width
+            spacing: 8
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: qsTr("Updates: this is Relay %1.").arg(Updates.currentVersion) + " "
+                      + (Updates.available ? qsTr("Relay %1 is available.").arg(Updates.latestVersion)
+                         : Updates.autoCheck ? qsTr("Relay checks for a new version once a day and asks before installing it.")
+                         : qsTr("Checking for new versions is off."))
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+            }
+            Flow {
+                width: parent.width
+                spacing: 8
+                ActionButton {
+                    visible: Updates.available
+                    primary: true
+                    text: Updates.canInstall ? qsTr("Update to %1").arg(Updates.latestVersion) : qsTr("Get %1").arg(Updates.latestVersion)
+                    enabled: Updates.state !== "downloading" && Updates.state !== "installing"
+                    onClicked: Updates.updateNow()
+                }
+                ActionButton {
+                    text: Updates.state === "checking" ? qsTr("Checking…") : qsTr("Check now")
+                    enabled: Updates.state === "" || Updates.state === "error"
+                    onClicked: Updates.check(true)
+                }
+                ActionButton {
+                    text: Updates.autoCheck ? qsTr("Check automatically: on") : qsTr("Check automatically: off")
+                    onClicked: Updates.autoCheck = !Updates.autoCheck
+                }
+                ActionButton {
+                    visible: Updates.releaseUrl.length > 0
+                    text: qsTr("What's new")
+                    onClicked: Qt.openUrlExternally(Updates.releaseUrl)
+                }
+            }
+            Rectangle {   // download progress
+                visible: Updates.state === "downloading"
+                width: Math.min(parent.width, 420)
+                height: 6
+                radius: 3
+                color: Theme.raised
+                Rectangle { width: parent.width * Updates.progress; height: parent.height; radius: 3; color: Theme.accent }
+            }
+            Text {
+                visible: Updates.status.length > 0 && (Updates.state !== "" || !Updates.available)
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: Updates.status
+                color: Updates.state === "error" ? Theme.danger : Theme.accent
+                font.pixelSize: Theme.fontSmall
+            }
+            // While the repository is private, GitHub only shows releases with a token.
+            Row {
+                spacing: 8
+                FieldInput {
+                    id: updateToken
+                    width: Math.min(card.width - 220, 420)
+                    label: qsTr("GitHub token (only while Relay's repository is private)")
+                    placeholder: Updates.hasToken ? qsTr("Saved") : "github_pat_…"
+                    echoMode: TextInput.Password
+                    onAccepted: { Updates.setToken(text); text = "" }
+                }
+                ActionButton {
+                    anchors.bottom: parent.bottom
+                    text: qsTr("Save")
+                    enabled: updateToken.text.trim().length > 0
+                    onClicked: { Updates.setToken(updateToken.text); updateToken.text = "" }
+                }
+                ActionButton {
+                    anchors.bottom: parent.bottom
+                    visible: Updates.hasToken
+                    text: qsTr("Remove")
+                    onClicked: Updates.setToken("")
+                }
+            }
+        }
+
         // Backup and restore
         Column {
             width: card.width
@@ -1099,6 +1181,18 @@ FocusScope {
     }
 
     }   // Flickable
+
+    // The way out with the mouse (same as Esc). Stays in the corner while
+    // the settings scroll.
+    CloseButton {
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 20
+        z: 5
+        visible: !keysDialog.opened && (root.canClose || root.showHidden || (root.newPlaylist && Settings.hasSource))
+        label: root.showHidden || root.newPlaylist ? qsTr("Back") : qsTr("Close settings")
+        onClicked: root.goBack()
+    }
 
     KeysDialog {
         id: keysDialog

@@ -285,6 +285,10 @@ Window {
         function onMessage(text) { toast.show(text) }
     }
     Connections {
+        target: Updates
+        function onMessage(text, problem) { toast.show(text, problem) }
+    }
+    Connections {
         target: Player
         function onPlayRequested(url, userAgent, referrer) {
             win.playbackError = ""
@@ -991,6 +995,9 @@ Window {
     }
 
     Toast { id: toast; z: 30 }
+
+    // A new version (Settings → Updates has the same).
+    UpdateBanner { z: 24; suppressed: win.showSetup }
 
     SetupScreen {
         id: setupScreen

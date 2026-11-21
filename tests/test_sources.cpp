@@ -13,6 +13,7 @@
 #include "sources/Catchup.h"
 #include "vod/Tmdb.h"
 #include "app/Trakt.h"
+#include "app/Updater.h"
 #include "cast/CastDevices.h"
 #include "cast/CastRelay.h"
 #include "cast/CastService.h"
@@ -31,7 +32,9 @@
 #include <QTcpSocket>
 #include "vod/VodService.h"
 
+#include <QCryptographicHash>
 #include <QJsonArray>
+#include <QNetworkReply>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
@@ -80,6 +83,58 @@ protected:
             sock->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size())
                         + "\r\nConnection: close\r\n\r\n" + body);
             sock->disconnectFromHost();
+        });
+    }
+};
+
+
+// Stand-in for GitHub's API: the latest release, and its installer behind a
+// redirect to another host (localhost instead of 127.0.0.1), the way GitHub
+// sends downloads elsewhere.
+class GithubServer : public QTcpServer
+{
+public:
+    QByteArray file = QByteArray(300000, 'R');
+    QByteArray digest;            // "sha256:..." in the release, if set
+    QByteArray requireToken;      // the API answers 404 without it
+    QList<QByteArray> requests;   // "path|authorization"
+    GithubServer() { listen(QHostAddress::Any); }
+    QString base() const { return QStringLiteral("http://127.0.0.1:%1").arg(serverPort()); }
+protected:
+    void incomingConnection(qintptr fd) override
+    {
+        auto *sock = new QTcpSocket(this);
+        sock->setSocketDescriptor(fd);
+        connect(sock, &QTcpSocket::readyRead, sock, [this, sock] {
+            const QByteArray req = sock->readAll();
+            const QByteArray path = req.split(' ').value(1);
+            QByteArray auth;
+            for (const QByteArray &line : req.split('\n'))
+                if (line.toLower().startsWith("authorization:")) auth = line.mid(14).trimmed();
+            requests << path + '|' + auth;
+            const QByteArray port = QByteArray::number(serverPort());
+            auto send = [sock](const QByteArray &status, const QByteArray &body, const QByteArray &extra = {}) {
+                sock->write("HTTP/1.1 " + status + "\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\n" + extra
+                            + "Connection: close\r\n\r\n" + body);
+                sock->disconnectFromHost();
+            };
+            if (path == "/repos/me/relay/releases/latest") {
+                if (!requireToken.isEmpty() && auth != "Bearer " + requireToken) { send("404 Not Found", "{}"); return; }
+                QJsonObject asset{{"name", "Relay-0.9.0-setup.exe"}, {"size", file.size()},
+                                  {"url", QString::fromLatin1("http://127.0.0.1:" + port + "/repos/me/relay/releases/assets/7")}};
+                if (!digest.isEmpty()) asset.insert("digest", QString::fromLatin1(digest));
+                QJsonObject zip{{"name", "Relay-0.9.0-windows.zip"}, {"size", 5}, {"url", "http://x/zip"}};
+                const QJsonObject rel{{"tag_name", "v0.9.0"}, {"html_url", "https://github.com/me/relay/releases/tag/v0.9.0"},
+                                      {"body", "Better things"}, {"draft", false}, {"prerelease", false},
+                                      {"assets", QJsonArray{zip, asset}}};
+                send("200 OK", QJsonDocument(rel).toJson());
+            } else if (path == "/repos/me/relay/releases/assets/7") {
+                send("302 Found", "", "Location: http://localhost:" + port + "/download/setup.exe\r\n");
+            } else if (path == "/download/setup.exe") {
+                send("200 OK", file);
+            } else {
+                send("404 Not Found", "");
+            }
         });
     }
 };
@@ -1763,6 +1818,113 @@ private slots:
         QCOMPARE(gone->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 404);
         bad->deleteLater();
         gone->deleteLater();
+    }
+
+
+    void update_versions()
+    {
+        QCOMPARE(Updater::compareVersions("0.10.0", "0.9.9"), 1);
+        QCOMPARE(Updater::compareVersions("v1.2", "1.2.0"), 0);
+        QCOMPARE(Updater::compareVersions("1.2.0", "1.2.1"), -1);
+        QCOMPARE(Updater::compareVersions("2.0.0-beta", "2.0.0"), 0);
+        QCOMPARE(Updater::compareVersions("1.0", "0.99.99"), 1);
+
+        const QByteArray release = js("{'tag_name':'v0.3.1','html_url':'https://h/r','body':'notes','draft':false,'prerelease':false,"
+                                      "'assets':[{'name':'Relay-0.3.1-windows.zip','url':'u1','size':1},"
+                                      "{'name':'Relay-0.3.1-setup.exe','url':'u2','size':42,'digest':'sha256:ABCD'}]}");
+        QVariantMap r = Updater::parseRelease(release, "windows");
+        QCOMPARE(r.value("version").toString(), QString("0.3.1"));
+        QCOMPARE(r.value("assetUrl").toString(), QString("u2"));
+        QCOMPARE(r.value("assetSize").toLongLong(), 42);
+        QCOMPARE(r.value("sha256").toString(), QString("abcd"));
+        QCOMPARE(r.value("page").toString(), QString("https://h/r"));
+        // No installer for Linux: the version (and page) without a download.
+        r = Updater::parseRelease(release, "linux");
+        QCOMPARE(r.value("version").toString(), QString("0.3.1"));
+        QVERIFY(!r.contains("assetUrl"));
+        // Drafts, pre-releases and tags that aren't versions are ignored.
+        QVERIFY(Updater::parseRelease(js("{'tag_name':'v9','draft':true}"), "windows").isEmpty());
+        QVERIFY(Updater::parseRelease(js("{'tag_name':'v9','prerelease':true}"), "windows").isEmpty());
+        QVERIFY(Updater::parseRelease(js("{'tag_name':'nightly'}"), "windows").isEmpty());
+    }
+
+    void update_check_and_download()
+    {
+        QSettings().remove("updates");
+        GithubServer gh;
+        gh.requireToken = "tok123";
+        qputenv("RELAY_UPDATE_URL", gh.base().toUtf8());
+        qputenv("RELAY_UPDATE_REPO", "me/relay");
+        qputenv("RELAY_UPDATE_NO_INSTALL", "1");
+        const QString version = QCoreApplication::applicationVersion();
+        QCoreApplication::setApplicationVersion("0.8.2");
+
+        Updater up;
+        QCOMPARE(up.repository(), QString("me/relay"));
+        // Private repository without a token: explained, nothing offered.
+        up.check(true);
+        QTRY_COMPARE(up.state(), QString("error"));
+        QVERIFY(up.status().contains("token"));
+        QVERIFY(!up.available());
+
+        up.setToken("tok123");   // checks again
+        QVERIFY(up.hasToken());
+        QTRY_VERIFY(up.available());
+        QCOMPARE(up.latestVersion(), QString("0.9.0"));
+        QVERIFY(up.offered());
+        QCOMPARE(up.notes(), QString("Better things"));
+
+        // Later: still available, but not offered again for this version.
+        up.later();
+        QVERIFY(up.available());
+        QVERIFY(!up.offered());
+        QSettings().remove("updates/skipped");
+
+        // Download (with the checksum GitHub lists), on any system in the test.
+        gh.digest = "sha256:" + QCryptographicHash::hash(gh.file, QCryptographicHash::Sha256).toHex();
+        QVariantMap rel = Updater::parseRelease([&] {
+            // The same release, for Windows, so there's an installer to fetch.
+            QNetworkAccessManager nam; QNetworkRequest req(QUrl(gh.base() + "/repos/me/relay/releases/latest"));
+            req.setRawHeader("Authorization", "Bearer tok123");
+            QNetworkReply *r = nam.get(req);
+            QSignalSpy done(r, &QNetworkReply::finished);
+            done.wait(5000);
+            const QByteArray b = r->readAll(); r->deleteLater(); return b;
+        }(), "windows");
+        QVERIFY(rel.contains("sha256"));
+        QSignalSpy got(&up, &Updater::downloaded);
+        up.setReleaseForTest(rel);
+        up.updateNow();
+        QTRY_COMPARE_WITH_TIMEOUT(got.count(), 1, 10000);
+        QCOMPARE(up.state(), QString("installing"));
+        const QString path = got.first().first().toString();
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), gh.file);
+        // The token went to the API, but not to the other host that had the file.
+        bool assetWithToken = false, fileWithoutToken = false;
+        for (const QByteArray &r : gh.requests) {
+            if (r == "/repos/me/relay/releases/assets/7|Bearer tok123") assetWithToken = true;
+            if (r == "/download/setup.exe|") fileWithoutToken = true;
+        }
+        QVERIFY2(assetWithToken && fileWithoutToken, gh.requests.join(", "));
+
+        // A file that doesn't match the checksum isn't run.
+        Updater up2;
+        rel.insert("sha256", QString(64, '0'));
+        up2.setReleaseForTest(rel);
+        QSignalSpy got2(&up2, &Updater::downloaded);
+        up2.updateNow();
+        QTRY_COMPARE_WITH_TIMEOUT(up2.state(), QString("error"), 10000);
+        QVERIFY(up2.status().contains("checksum"));
+        QCOMPARE(got2.count(), 0);
+        QVERIFY(!QFile::exists(path));
+
+        up.setToken("");
+        QVERIFY(!up.hasToken());
+        QCoreApplication::setApplicationVersion(version);
+        qunsetenv("RELAY_UPDATE_URL"); qunsetenv("RELAY_UPDATE_REPO"); qunsetenv("RELAY_UPDATE_NO_INSTALL");
+        QSettings().remove("updates");
     }
 
     void trakt_watched()
