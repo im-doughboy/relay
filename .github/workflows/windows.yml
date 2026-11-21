@@ -34,7 +34,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
@@ -71,7 +71,7 @@ jobs:
         run: ./packaging/package-windows.sh
 
       - name: Keep the installer and the zip with this run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Relay-${{ steps.version.outputs.version }}-windows
           path: |

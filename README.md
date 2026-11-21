@@ -600,6 +600,29 @@ cd build && ctest --output-on-failure
 number entry and last-channel restore. `test_epg` covers XMLTV times and time zones, gzip
 and chunked input, damaged files, name matching, stop-time inference and the full import.
 
+## Builds on GitHub
+
+Every push to `main` builds Relay on GitHub's Windows machines (`.github/workflows/windows.yml`):
+MSYS2 UCRT64 with the same packages as above, the unit tests, then
+`packaging/package-windows.sh`. The installer and the zip are kept with the run for 30 days:
+**Actions → Windows build →** the run **→ Artifacts**. A change to the README alone doesn't start
+a build. **Run workflow** on that page starts one by hand.
+
+To publish a release:
+
+1. Raise the version in `CMakeLists.txt` (`project(Relay VERSION 0.2.0 …)`) and push it.
+2. Tag that version and push the tag:
+   ```
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+3. The build attaches the installer and the zip to a new GitHub Release, with notes listing the
+   changes since the last one. A tag that doesn't match the version in `CMakeLists.txt` stops the
+   build instead.
+
+A build takes about 20 minutes. GitHub's free allowance of build minutes for private
+repositories counts Windows minutes double.
+
 ## Command line
 
 ```
