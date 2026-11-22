@@ -31,6 +31,8 @@ class Updater : public QObject
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(bool autoCheck READ autoCheck WRITE setAutoCheck NOTIFY changed)
     Q_PROPERTY(bool hasToken READ hasToken NOTIFY changed)
+    // GitHub hid the releases (a private repository): Settings shows the token field.
+    Q_PROPERTY(bool needsToken READ needsToken NOTIFY changed)
     Q_PROPERTY(QString repository READ repository CONSTANT)
 
 public:
@@ -49,6 +51,7 @@ public:
     bool autoCheck() const;
     void setAutoCheck(bool on);
     bool hasToken() const { return !token().isEmpty(); }
+    bool needsToken() const { return m_needsToken; }
     QString repository() const;
 
     Q_INVOKABLE void check(bool byHand = true);
@@ -83,6 +86,7 @@ private:
     QVariantMap m_release;
     QString m_state, m_status;
     double m_progress = 0;
+    bool m_needsToken = false;
     QTimer m_timer;
     QPointer<QNetworkReply> m_reply;
     QFile *m_file = nullptr;

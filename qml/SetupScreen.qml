@@ -1068,13 +1068,14 @@ FocusScope {
                 color: Updates.state === "error" ? Theme.danger : Theme.accent
                 font.pixelSize: Theme.fontSmall
             }
-            // While the repository is private, GitHub only shows releases with a token.
+            // Only when GitHub hides the releases (a private repository) or one is saved.
             Row {
+                visible: Updates.hasToken || Updates.needsToken
                 spacing: 8
                 FieldInput {
                     id: updateToken
                     width: Math.min(card.width - 220, 420)
-                    label: qsTr("GitHub token (only while Relay's repository is private)")
+                    label: qsTr("GitHub token (for a private copy of Relay's repository)")
                     placeholder: Updates.hasToken ? qsTr("Saved") : "github_pat_…"
                     echoMode: TextInput.Password
                     onAccepted: { Updates.setToken(text); text = "" }

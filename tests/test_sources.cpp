@@ -1865,11 +1865,13 @@ private slots:
         up.check(true);
         QTRY_COMPARE(up.state(), QString("error"));
         QVERIFY(up.status().contains("token"));
+        QVERIFY(up.needsToken());
         QVERIFY(!up.available());
 
         up.setToken("tok123");   // checks again
         QVERIFY(up.hasToken());
         QTRY_VERIFY(up.available());
+        QVERIFY(!up.needsToken());
         QCOMPARE(up.latestVersion(), QString("0.9.0"));
         QVERIFY(up.offered());
         QCOMPARE(up.notes(), QString("Better things"));

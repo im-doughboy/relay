@@ -184,6 +184,7 @@ void Updater::check(bool byHand)
         reply->deleteLater();
         const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QSettings().setValue(QStringLiteral("updates/lastCheck"), QDateTime::currentSecsSinceEpoch());
+        m_needsToken = http == 404 && !hadToken;
         if (http != 200) {
             // A private repository looks like a missing one without a token.
             const QString problem = http == 404 && !hadToken ? tr("Couldn't see Relay's releases. While the repository is private, Relay needs a GitHub token (below).")

@@ -474,11 +474,8 @@ and SHA-256 GitHub lists for it, and runs it quietly; Relay closes, updates in p
 again, with your playlists and settings kept. **Later** stops offering that version; ✕ hides the
 card until next time. A desktop shortcut you removed stays removed.
 
-While the repository is private, GitHub only shows its releases to people signed in, so Relay
-needs a token: github.com → Settings → Developer settings → Fine-grained tokens → Generate new
-token, with access to only the relay repository and **Contents: Read-only**. Paste it in
-Settings → Updates (it's kept in Windows Credential Manager). Anyone else you give Relay to would
-need one too, which is a reason to make the repository public before sharing it.
+Nothing to set up: the releases are public. (A private copy of the repository would need a
+GitHub token that can read it; Settings → Updates asks for one when GitHub hides the releases.)
 
 On macOS and Linux there's no installer to run yet: Relay tells you about the new version and
 opens its release page.
