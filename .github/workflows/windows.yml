@@ -58,6 +58,13 @@ jobs:
             echo "::error::The tag ${GITHUB_REF#refs/tags/} doesn't match the version in CMakeLists.txt ($VERSION)."
             exit 1
           fi
+          # Every version needs its section in CHANGELOG.md (the release text).
+          awk -v v="$VERSION" '/^## /{on = ($2 == v); next} on' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            msg="CHANGELOG.md has no section for $VERSION (## $VERSION)."
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "::error::$msg Add one before tagging."; exit 1; fi
+            echo "::warning::$msg Add one before releasing."
+          fi
 
       - name: Build and run the tests
         env:
@@ -109,7 +116,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Relay ${{ steps.version.outputs.version }}
-          generate_release_notes: true
+          # This version's section of CHANGELOG.md (made in "Version").
+          body_path: release-notes.md
           files: |
             dist/Relay-*-setup.exe
             dist/Relay-*-windows-x64.zip

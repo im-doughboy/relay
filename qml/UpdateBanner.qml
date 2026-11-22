@@ -8,6 +8,7 @@ Rectangle {
     id: root
     property bool dismissed: false
     property bool suppressed: false   // Settings is open (it has its own)
+    property bool showNotes: false
     readonly property bool busy: Updates.state === "downloading" || Updates.state === "installing"
 
     visible: !suppressed && ((Updates.offered && !dismissed) || busy || (Updates.state === "error" && shownError))
@@ -59,6 +60,25 @@ Rectangle {
             color: Updates.state === "error" ? Theme.danger : Theme.textSecondary
             font.pixelSize: Theme.fontSmall
         }
+        Flickable {   // what's new in this version (its CHANGELOG.md section)
+            visible: root.showNotes && Updates.notes.length > 0
+            width: parent.width
+            height: Math.min(notesText.implicitHeight, 260)
+            contentHeight: notesText.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            Text {
+                id: notesText
+                width: parent.width
+                text: Updates.notes
+                textFormat: Text.MarkdownText
+                wrapMode: Text.Wrap
+                color: Theme.textSecondary
+                linkColor: Theme.accent
+                font.pixelSize: Theme.fontSmall
+                onLinkActivated: (link) => Qt.openUrlExternally(link)
+            }
+        }
         Rectangle {
             visible: Updates.state === "downloading"
             width: parent.width
@@ -77,8 +97,8 @@ Rectangle {
             }
             ActionButton {
                 visible: Updates.releaseUrl.length > 0
-                text: qsTr("What's new")
-                onClicked: Qt.openUrlExternally(Updates.releaseUrl)
+                text: root.showNotes ? qsTr("Hide notes") : qsTr("What's new")
+                onClicked: Updates.notes.length ? (root.showNotes = !root.showNotes) : Qt.openUrlExternally(Updates.releaseUrl)
             }
             ActionButton {
                 text: qsTr("Later")

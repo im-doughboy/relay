@@ -1015,6 +1015,7 @@ FocusScope {
         // Updates
         Column {
             id: updatesBox
+            property bool showNotes: false
             width: card.width
             spacing: 8
             Text {
@@ -1048,10 +1049,29 @@ FocusScope {
                 }
                 ActionButton {
                     visible: Updates.releaseUrl.length > 0
-                    text: qsTr("What's new")
-                    onClicked: Qt.openUrlExternally(Updates.releaseUrl)
+                    text: updatesBox.showNotes ? qsTr("Hide notes") : qsTr("What's new")
+                    onClicked: Updates.notes.length ? (updatesBox.showNotes = !updatesBox.showNotes) : Qt.openUrlExternally(Updates.releaseUrl)
                 }
             }
+            Flickable {   // what's new in this version (its CHANGELOG.md section)
+            visible: updatesBox.showNotes && Updates.notes.length > 0
+            width: parent.width
+            height: Math.min(updateNotesText.implicitHeight, 320)
+            contentHeight: updateNotesText.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            Text {
+                id: updateNotesText
+                width: parent.width
+                text: Updates.notes
+                textFormat: Text.MarkdownText
+                wrapMode: Text.Wrap
+                color: Theme.textSecondary
+                linkColor: Theme.accent
+                font.pixelSize: Theme.fontSmall
+                onLinkActivated: (link) => Qt.openUrlExternally(link)
+            }
+        }
             Rectangle {   // download progress
                 visible: Updates.state === "downloading"
                 width: Math.min(parent.width, 420)
