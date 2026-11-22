@@ -107,6 +107,38 @@ while :; do
     echo "   added $added"
 done
 
+# ---- licenses ------------------------------------------------------------------
+# Relay's own (GPL v3), and the license files of every MSYS2 package a bundled
+# library comes from (Qt, mpv, FFmpeg and what they use).
+step "Licenses"
+prefix=${MINGW_PACKAGE_PREFIX:-mingw-w64-ucrt-x86_64}
+cp "$ROOT/LICENSE" "$APP/LICENSE.txt"
+mkdir -p "$APP/licenses"
+pkgs=$(find "$APP" -type f -iname '*.dll' -print0 \
+       | while IFS= read -r -d '' f; do
+             src="$MINGW_PREFIX/bin/$(basename "$f")"
+             if [ -e "$src" ]; then pacman -Qqo "$src" 2>/dev/null || true; fi
+         done | sort -u)
+count=0
+for pkg in $pkgs; do
+    dir="$MINGW_PREFIX/share/licenses/${pkg#"$prefix-"}"
+    [ -d "$dir" ] || continue
+    cp -r "$dir" "$APP/licenses/"
+    count=$((count + 1))
+done
+{
+    echo "Relay is free software under the GNU General Public License v3 (LICENSE.txt)."
+    echo "Source: https://github.com/im-doughboy/relay"
+    echo
+    echo "This folder also contains these open-source packages from MSYS2"
+    echo "(https://packages.msys2.org), each under its own license; their license"
+    echo "files are in the licenses folder, and their source is at"
+    echo "https://github.com/msys2/MINGW-packages and the projects' own sites:"
+    echo
+    for pkg in $pkgs; do echo "  ${pkg#"$prefix-"} $(pacman -Q "$pkg" | cut -d' ' -f2)"; done
+} > "$APP/THIRD-PARTY.txt"
+echo "   $count packages' license files"
+
 # ---- check ---------------------------------------------------------------------
 step "Checking"
 problems=0

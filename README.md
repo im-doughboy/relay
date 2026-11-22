@@ -1,11 +1,50 @@
 # Relay
 
-A native IPTV player for Windows and macOS, built with Qt 6 (C++/QML) and libmpv.
-Set-top-box feel: it opens straight into live TV, and everything works from the keyboard.
+**A desktop IPTV player for Windows, Mac and Linux**, built with Qt 6 and mpv. It feels like a
+set-top box: it opens straight into live TV, everything works from the keyboard (or a remote
+that sends keys), and the mouse works everywhere too.
 
-> "Relay" is a working name. Search the project for `Relay` to rename it.
+> **Relay is a player only. It doesn't come with any channels.** You add a playlist or login from
+> your own IPTV provider, or from your own tuner. Use it only with services you're allowed to watch.
 
-## Phase 1 features
+## Install
+
+**Windows 10 and 11:** download `Relay-<version>-setup.exe` from
+[Releases](../../releases/latest) and run it. It installs for your Windows user only (no
+administrator prompt), and Relay then keeps itself up to date.
+
+The installer isn't code-signed yet, so Windows SmartScreen may say *"Windows protected your PC"*.
+Click **More info → Run anyway**. A portable `.zip` is on the same page if you'd rather not install.
+
+**Mac and Linux:** there are no ready-made downloads yet. Build it from the source; see
+[Building](#building).
+
+## What it does
+
+- **Playlists:** M3U/M3U8 links or files, Xtream Codes logins, and Stalker portal (MAC) logins;
+  several playlists side by side
+- **TV guide:** XMLTV guides, now/next in the channel list, a full guide grid, reminders
+- **Pause live TV, catch-up and recordings**, including recording a whole series
+- **Movies and series** from your provider, with posters and details from TMDB
+- **Multi-view** (up to four channels at once) and picture-in-picture
+- **Favorites, hidden channels, search, renaming and reordering**, and a parental PIN
+- **Trakt:** marks what you watch and imports what you've already seen
+- **Casting** to a Chromecast or a DLNA smart TV
+- **Automatic updates** from this page's releases
+
+The sections below describe each feature in detail.
+
+## Privacy
+
+Relay has no account, no ads and no analytics. It talks only to your provider (including the
+logo and guide addresses in your playlist), the guide addresses you add, GitHub to check for
+updates (Settings → Updates turns that off), and TMDB and Trakt if you set them up.
+
+Your playlist logins and keys are kept in Windows Credential Manager or the macOS Keychain. On
+Linux they're in Relay's settings file in your home folder for now. Passwords are blanked out
+of Relay's log.
+
+## Live TV
 
 - **Playlists:** M3U/M3U8 by URL or local file, and Xtream Codes login (MPEG-TS or HLS output)
 - **Live TV only:** movie and series entries in "m3u_plus" playlists (`/movie/`, `/series/`
@@ -21,7 +60,7 @@ Set-top-box feel: it opens straight into live TV, and everything works from the 
   never starts gets one quick retry before the error shows
 - Fullscreen, mute, volume, pause, auto-hiding mouse cursor in fullscreen
 
-## Phase 2a: TV guide (EPG)
+## TV guide (EPG)
 
 - **Guide import:** XMLTV from the playlist's `url-tvg` or Xtream's `xmltv.php`, or your own
   guide address in Playlist settings. Plain or `.gz`, URL or local file.
@@ -36,7 +75,7 @@ Set-top-box feel: it opens straight into live TV, and everything works from the 
 - **Stays current:** the stored guide appears instantly at startup and refreshes in the
   background every 12 hours. Settings show the guide status, with an **Update guide** button.
 
-## Phase 2b: TV guide grid
+## TV guide grid
 
 Press **G** for a full-screen guide: channels down the left, shows laid out on a two-hour
 timeline, a "now" line, past shows dimmed, and the live channel still playing in a preview at
@@ -55,7 +94,7 @@ description.
 Mouse: click a show to select it, click again or double-click to watch, scroll for channels,
 Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
 
-## Phase 2c (part 1): Favorites and hiding
+## Favorites and hiding
 
 - **Favorites:** press **F** on a channel in the channel list or the guide (or right-click it).
   Favorites is always the first group, in the order you added them, with a ★ on the channel.
@@ -68,7 +107,7 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   provider's stream ID, so favorites and hidden items stay put when the playlist reloads,
   even if your provider changes its domain or your password.
 
-## Phase 2c (part 2): Search, rename and reorder
+## Search, rename and reorder
 
 - **Search:** press **/** or **Ctrl+F** (also from the channel list or the guide). Type to
   find channels by name or number (accents and capitals ignored; every word must match) and
@@ -81,7 +120,7 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
 - Like favorites and hiding, all of this is saved in `library.json` and survives playlist
   refreshes.
 
-## Phase 3a: Movies and series
+## Movies and series
 
 - Press **V** for Movies and Series. With an Xtream login, or an M3U link from an Xtream-style
   server (`…/get.php?username=…&password=…`), the full catalogue comes from the server, with
@@ -99,7 +138,7 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
 - Search (**/**) also finds movies and series once the catalogue has loaded.
 - Posters and logos are cached on disk (up to 300 MB).
 
-## Phase 3b: Pause live TV and catch-up
+## Pause live TV and catch-up
 
 - **Pause live TV:** Space pauses a channel while Relay keeps saving it, so you can carry on
   where you left off. **Shift+← / Shift+→** (or **,** and **.**) rewind or skip 10 s,
@@ -118,7 +157,7 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   can describe catch-up with `catchup`, `catchup-days` and `catchup-source` (types `default`,
   `append`, `shift`, `flussonic`, `xc`). Settings shows how many channels have catch-up.
 
-## Phase 3c (part 1): Reminders and recordings
+## Reminders and recordings
 
 - **In the guide:** **R** records the selected show (it starts a minute early and runs two minutes
   over), **M** reminds you a minute before a show starts. Press again to cancel. A red dot or a
@@ -136,7 +175,7 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   segment. Note: many providers allow only one connection per account, so recording one channel
   while watching another may be refused by the server.
 
-## Phase 3c (part 2): Multi-view
+## Multi-view
 
 - Press **Q** to watch up to four channels at once. It opens with the channel you're watching
   plus the ones you had last time.
@@ -149,7 +188,7 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
 - Each tile is a separate stream. Many providers limit how many streams an account can play at
   once; tiles that the server refuses show the reason.
 
-## Phase 3c (part 3): Parental PIN and secure login storage
+## Parental PIN and secure login storage
 
 - **Parental PIN:** set a 4-digit PIN in Settings (S). Then press **K** on a channel or group in
   the channel list (or right-click → Lock), or on a provider category in Movies / Series.
@@ -676,13 +715,32 @@ tests/        unit tests
 - A new playlist is saved only after it loads successfully.
 - The guide lives in `guide.sqlite` in the app data folder (on Windows,
   `%APPDATA%\Relay\Relay`). A failed or mismatched guide update keeps the previous guide.
-- The Xtream password is stored in the app's settings file for now; moving it to the OS
-  keychain is on the list for Phase 3.
+- Passwords, tokens and keys go to `SecretStore` (Windows Credential Manager, macOS Keychain);
+  where there's no credential store (Linux for now), they stay in the settings file.
 
 ## What's next
 
-- **Automatic updates** (needs a place to publish releases, such as GitHub).
 - **User profiles** and **radio channels**.
 - Casting: subtitles and audio track choices on the TV.
+- Ready-made downloads for Mac and Linux.
 
-Relay is a player only. Use playlists from a provider you're licensed to watch or your own tuner.
+## Reporting problems
+
+Bugs and ideas: [Issues](../../issues). For a security problem, please use **Report a
+vulnerability** on the [Security](../../security) tab instead, so it stays private until it's
+fixed.
+
+## License
+
+Relay is free software under the [GNU General Public License v3.0](LICENSE): you can use, share
+and change it, and if you share a changed version, you share its source under the same license.
+
+The Windows download includes other people's open-source work, each under its own license:
+[Qt](https://www.qt.io/licensing/) (LGPL v3), [mpv](https://github.com/mpv-player/mpv) (GPL as built
+here), [FFmpeg](https://ffmpeg.org/legal.html) (GPL as built here), and the
+libraries MSYS2 builds them with. Their source is available from those projects and from
+[MSYS2](https://packages.msys2.org).
+
+Movie and series details and images come from [TMDB](https://www.themoviedb.org). This product
+uses the TMDB API but is not endorsed or certified by TMDB. Trakt is a trademark of Trakt, Inc.;
+Relay isn't affiliated with Trakt, Chromecast (Google) or any IPTV provider.
