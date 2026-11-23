@@ -14,7 +14,9 @@ ChannelModel::ChannelModel(QObject *parent)
     : QAbstractListModel(parent)
 {
     m_groupNames << tr("Favorites") << tr("Recently watched") << tr("All channels");
-    m_members.resize(2);
+    // One list per group name (Favorites, Recently watched, All channels):
+    // "All channels" is selected from the start, before any playlist loads.
+    m_members.resize(m_groupNames.size());
     m_guideTick.setInterval(30000);
     connect(&m_guideTick, &QTimer::timeout, this, &ChannelModel::refreshGuideRoles);
     m_guideTick.start();

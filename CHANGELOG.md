@@ -3,6 +3,13 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.2.2
+
+- **Fixed: Relay closing by itself as it starts on some PCs.** Before your playlist finished
+  loading, Relay could read memory it shouldn't have; on some computers that made it close
+  straight away, every time. If that happened to you, install this version by hand once
+  (Relay couldn't stay open long enough to update itself); after that, updates are automatic.
+
 ## 0.2.1
 
 - **Settings is tidier:** the GitHub token field is gone. Relay's releases are public now, so

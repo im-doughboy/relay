@@ -179,7 +179,11 @@ signals:
     void channelRenamed(int globalIndex);
 
 private:
-    const QVector<int> &visible() const { return m_members[m_currentGroup]; }
+    const QVector<int> &visible() const
+    {
+        static const QVector<int> none;
+        return m_currentGroup >= 0 && m_currentGroup < m_members.size() ? m_members[m_currentGroup] : none;
+    }
     bool isHidden(int globalIndex) const;
     // Recomputes which channels/groups are shown. Keeps the current group
     // (by name) and only resets the view if its contents changed.

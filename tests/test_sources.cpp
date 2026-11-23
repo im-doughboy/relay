@@ -335,6 +335,21 @@ private slots:
 
     // ---- Model + controller ----
 
+    // Before a playlist loads, "All channels" is selected and empty (Relay
+    // 0.2.1 read past the end of its group lists here and crashed on some PCs).
+    void model_before_a_playlist()
+    {
+        ChannelModel model;
+        QCOMPARE(model.currentGroup(), int(ChannelModel::AllGroup));
+        QCOMPARE(model.rowCount(), 0);
+        QVERIFY(!model.data(model.index(0), ChannelModel::NameRole).isValid());
+        QCOMPARE(model.globalIndexAt(0), -1);
+        QCOMPARE(model.rowOf(0), -1);
+        QCOMPARE(model.findByNumber(1), -1);
+        for (int g = 0; g < 3; ++g) model.setCurrentGroup(g);
+        QCOMPARE(model.rowCount(), 0);
+    }
+
     void model_groups_and_zapping()
     {
         ChannelModel model;
