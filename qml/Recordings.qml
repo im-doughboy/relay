@@ -119,31 +119,32 @@ FocusScope {
     Item {
         id: header
         width: parent.width
-        height: 84
+        height: Math.round(Math.max(64, Math.min(100, root.height * 0.095)))
         Row {
-            x: 32
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 8
+            anchors.centerIn: parent
+            spacing: Math.round(header.height * 0.12)
             Repeater {
                 model: [qsTr("Movies"), qsTr("Series"), qsTr("Recordings")]
                 delegate: Rectangle {
                     readonly property bool current: index === 2
-                    height: 44
-                    width: tabText.implicitWidth + 36
-                    radius: 22
-                    color: current ? Theme.accent : (tabMouse.containsMouse ? Theme.focus : Theme.raised)
+                    height: Math.round(header.height * 0.5)
+                    width: tabText.implicitWidth + height * 0.9
+                    radius: height / 2
+                    color: current ? "#40FFFFFF" : (tabMouse.containsMouse ? "#22FFFFFF" : "transparent")
                     Text {
                         id: tabText
                         anchors.centerIn: parent
                         text: modelData + (index === 2 && Schedule.recordingCount > 0 ? "  ●" : "")
-                        color: parent.current ? Theme.accentText : Theme.text
-                        font.pixelSize: Theme.fontBody
-                        font.weight: Font.DemiBold
+                        color: Theme.text
+                        opacity: parent.current ? 1 : 0.8
+                        font.pixelSize: Math.round(Math.max(Theme.fontBody, Math.min(24, header.height * 0.24)))
+                        font.weight: parent.current ? Font.DemiBold : Font.Medium
                     }
                     MouseArea {
                         id: tabMouse
                         anchors.fill: parent
                         hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
                         onClicked: if (index < 2) root.moviesRequested(index)
                     }
                 }
@@ -160,7 +161,7 @@ FocusScope {
             anchors.right: closeButton.left
             anchors.rightMargin: 16
             anchors.verticalCenter: parent.verticalCenter
-            width: Math.min(implicitWidth, parent.width - 580)
+            width: Math.min(implicitWidth, Math.max(0, closeButton.x - 16 - (parent.width / 2 + 260)))
             elide: Text.ElideLeft
             text: qsTr("Saved to %1").arg(Schedule.folder)
             color: Theme.textMuted

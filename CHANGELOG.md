@@ -3,6 +3,30 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.4.0
+
+- **Movies & series, redesigned** to feel like the big streaming apps on a TV:
+  - **Tabs in the middle at the top** (Search, Movies, Series, Recordings), lit when you're on
+    them; **Up** from the top of the page gets there with a remote, controller or the phone.
+  - A **spotlight card** with a featured title, its trailer playing inside the card, and Play and
+    More info. The page takes on the colours of what you're looking at.
+  - Your provider's **categories as chips** under it.
+  - **Rows that rise to the top** as you move down. The selected poster **widens into the
+    title's picture and plays its trailer** after a moment, and what it is (genre, year, length,
+    age rating, plot) shows under the row.
+  - **Title logos** instead of plain names, wherever TMDB has one (with a TMDB key in Settings).
+- **A title's page, redone:** what it is on the left, and a list of actions you go through with
+  ↑ ↓ (Play or Resume with how far you got, Play from the beginning, Episodes, Watch the
+  trailer, Favorites, Mark as watched, Watch in multi-view, Credits & more info). The trailer
+  plays behind it (muted; M for sound); leave it a moment and the text steps back so you can
+  watch, and any key brings it back.
+- **Episodes** on their own page: seasons on the left, episodes with their pictures and plots on
+  the right.
+- **Credits & more info:** director or creators, writers, cast, genres, age rating, year and
+  length.
+- With a TMDB key, titles now also get their **age rating** (PG-13, TV-MA…) and **writers**.
+- Trailers fill their space instead of showing black bars.
+
 ## 0.3.2
 
 - **Type from your phone:** when a search or other text box is open in Relay, the phone remote

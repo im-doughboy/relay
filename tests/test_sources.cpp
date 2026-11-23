@@ -1603,6 +1603,28 @@ private slots:
         QCOMPARE(table.value("102").value(1700000000), QStringLiteral("x1"));
     }
 
+    void tmdb_logos_and_ratings()
+    {
+        // The logo: a PNG, in English (or without words) when there's none in the viewer's language; best voted.
+        const QJsonArray logos = QJsonDocument::fromJson(R"([
+            {"file_path":"/fr.png","iso_639_1":"fr","vote_average":9},
+            {"file_path":"/en-low.png","iso_639_1":"en","vote_average":2},
+            {"file_path":"/en.svg","iso_639_1":"en","vote_average":10},
+            {"file_path":"/en-best.png","iso_639_1":"en","vote_average":5.3},
+            {"file_path":"/none.png","iso_639_1":null,"vote_average":8}])").array();
+        if (TmdbClient::languageCode() == QLatin1String("en")) QCOMPARE(TmdbClient::logoPath(logos), QStringLiteral("/en-best.png"));
+        QCOMPARE(TmdbClient::logoPath(QJsonDocument::fromJson(R"([{"file_path":"/x.png","iso_639_1":null}])").array()), QStringLiteral("/x.png"));
+        QVERIFY(TmdbClient::logoPath({}).isEmpty());
+        // Age ratings: a film's from its release dates, a series' from its content ratings (the US one when the viewer's isn't there).
+        const QJsonObject movie = QJsonDocument::fromJson(R"({"release_dates":{"results":[
+            {"iso_3166_1":"ZZ","release_dates":[{"certification":"18"}]},
+            {"iso_3166_1":"US","release_dates":[{"certification":""},{"certification":"PG-13"}]}]}})").object();
+        QCOMPARE(TmdbClient::certification(movie, false), QStringLiteral("PG-13"));
+        const QJsonObject tv = QJsonDocument::fromJson(R"({"content_ratings":{"results":[{"iso_3166_1":"US","rating":"TV-MA"}]}})").object();
+        QCOMPARE(TmdbClient::certification(tv, true), QStringLiteral("TV-MA"));
+        QVERIFY(TmdbClient::certification(QJsonObject(), true).isEmpty());
+    }
+
     void tmdb_titles()
     {
         auto clean = [](const char *t, const char *y = "") { return TmdbClient::clean(QString::fromUtf8(t), QString::fromUtf8(y)); };

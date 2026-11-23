@@ -21,6 +21,7 @@ FocusScope {
 
     function showHome() {
         browsing = true
+        searchOpen = false
         if (searchField.text.length) searchField.text = ""
         Vod.filter = ""
         home.focusRows()
@@ -55,7 +56,7 @@ FocusScope {
         Vod.ensureLoaded()
         syncCategory()
         if (Vod.filter.length) showGrid()
-        else showHome()
+        else { showHome(); home.reset() }
     }
     // Straight to one title (from search, or back from playback).
     function openDetails(kind, id, preview) {
@@ -103,12 +104,13 @@ FocusScope {
     }
     // Tab: Movies → Series → Recordings
     function switchSection() {
-        if (Vod.section === 0) { Vod.section = 1; syncCategory(); if (browsing) home.focusRows() }
+        if (Vod.section === 0) { Vod.section = 1; syncCategory(); if (browsing) { home.reset(); home.focusRows() } }
         else recordingsRequested()
     }
     // A remote's or the phone's Search: the box at the top.
     function focusSearch() {
         details.close()
+        searchOpen = true
         searchField.forceActiveFocus()
         searchField.selectAll()
     }
@@ -121,6 +123,7 @@ FocusScope {
         Vod.section = next
         syncCategory()
         showHome()
+        home.reset()
     }
     function cycleSort() {
         Vod.sort = (Vod.sort + 1) % Vod.sortNames.length
@@ -162,58 +165,112 @@ FocusScope {
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => w.accepted = true }
     }
 
-    // ---- Header ---------------------------------------------------------------
+    // ---- Header: tabs in the middle, search and order on the right -------------------------
+    // Up from the top of the page reaches the tabs; ← → move along them,
+    // Enter or ↓ opens one.
+    property bool searchOpen: false
     Item {
         id: header
         width: parent.width
-        height: 84
+        height: Math.round(Math.max(64, Math.min(100, root.height * 0.095)))
+        z: 5
+        visible: !details.opened     // a title's page has its own Back
+        Rectangle {   // over the page's tint
+            anchors.fill: parent
+            anchors.bottomMargin: -parent.height * 0.4
+            visible: root.browsing && !details.opened
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "#C0000000" }
+                GradientStop { position: 1.0; color: "transparent" }
+            }
+        }
 
-        Row {
-            id: tabs
-            x: 32
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 8
-            Repeater {
-                model: [
-                    { label: qsTr("Movies"), count: Vod.movieCount },
-                    { label: qsTr("Series"), count: Vod.seriesCount },
-                    { label: qsTr("Recordings"), count: -1 },
-                ]
-                delegate: Rectangle {
-                    readonly property bool current: Vod.section === index
-                    height: 44
-                    width: tabText.implicitWidth + 36
-                    radius: 22
-                    color: current ? Theme.accent : (tabMouse.containsMouse ? Theme.focus : Theme.raised)
-                    Text {
-                        id: tabText
-                        anchors.centerIn: parent
-                        text: modelData.label + (modelData.count >= 0 && Vod.loaded ? "  " + Number(modelData.count).toLocaleString(Qt.locale(), "f", 0)
-                                                 : modelData.count < 0 && Schedule.recordingCount > 0 ? "  ●" : "")
-                        color: parent.current ? Theme.accentText : Theme.text
-                        font.pixelSize: Theme.fontBody
-                        font.weight: Font.DemiBold
-                    }
-                    MouseArea {
-                        id: tabMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: {
-                            if (index === 2) { root.recordingsRequested(); return }
-                            Vod.section = index; root.syncCategory(); root.showHome()
+        FocusScope {
+            id: tabBar
+            anchors.centerIn: parent
+            width: tabRow.width
+            height: tabRow.height
+            readonly property var tabs: [
+                { id: "search", icon: Icons.search, label: "" },
+                { id: "movies", icon: "", label: qsTr("Movies") },
+                { id: "series", icon: "", label: qsTr("Series") },
+                { id: "recordings", icon: "", label: qsTr("Recordings") },
+            ]
+            readonly property int sectionTab: Vod.section === 1 ? 2 : 1
+            property int at: sectionTab
+            onActiveFocusChanged: if (activeFocus) at = root.searchOpen ? 0 : sectionTab
+            function openTab(i) {
+                const t = tabs[i].id
+                if (t === "search") { root.focusSearch(); return }
+                if (t === "recordings") { root.recordingsRequested(); return }
+                root.searchOpen = false
+                const section = t === "series" ? 1 : 0
+                if (Vod.section !== section) { Vod.section = section; root.syncCategory() }
+                root.showHome()
+                home.reset()
+            }
+            Keys.onPressed: (e) => {
+                switch (e.key) {
+                case Qt.Key_Left: at = Math.max(0, at - 1); break
+                case Qt.Key_Right: at = Math.min(tabs.length - 1, at + 1); break
+                case Qt.Key_Return:
+                case Qt.Key_Enter: openTab(at); break
+                case Qt.Key_Down:
+                    if (at !== sectionTab && at !== 0) openTab(at)
+                    else if (at === 0) root.focusSearch()
+                    else root.browsing ? home.focusRows() : grid.forceActiveFocus()
+                    break
+                case Qt.Key_Escape:
+                case Qt.Key_Backspace: root.close(); break
+                default: return
+                }
+                e.accepted = true
+            }
+
+            Row {
+                id: tabRow
+                spacing: Math.round(header.height * 0.12)
+                Repeater {
+                    model: tabBar.tabs
+                    delegate: Rectangle {
+                        id: tab
+                        required property var modelData
+                        required property int index
+                        readonly property bool current: index === 0 ? root.searchOpen : (!root.searchOpen && index === tabBar.sectionTab)
+                        readonly property bool lit: tabBar.activeFocus && tabBar.at === index
+                        height: Math.round(header.height * 0.5)
+                        width: modelData.label ? tabText.implicitWidth + height * 0.9 : height
+                        radius: height / 2
+                        color: lit ? Theme.text : current ? "#40FFFFFF" : (tabMouse.containsMouse ? "#22FFFFFF" : "transparent")
+                        Behavior on color { ColorAnimation { duration: Theme.animFast } }
+                        Text {
+                            id: tabText
+                            visible: tab.modelData.label.length > 0
+                            anchors.centerIn: parent
+                            text: tab.modelData.label + (tab.index === 3 && Schedule.recordingCount > 0 ? "  ●" : "")
+                            color: tab.lit ? Theme.background : Theme.text
+                            opacity: tab.lit || tab.current ? 1 : 0.8
+                            font.pixelSize: Math.round(Math.max(Theme.fontBody, Math.min(24, header.height * 0.24)))
+                            font.weight: tab.lit || tab.current ? Font.DemiBold : Font.Medium
+                        }
+                        Icon {
+                            visible: tab.modelData.icon.length > 0
+                            anchors.centerIn: parent
+                            width: Math.round(parent.height * 0.5)
+                            height: width
+                            path: tab.modelData.icon
+                            color: tab.lit ? Theme.background : Theme.text
+                        }
+                        MouseArea {
+                            id: tabMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: tabBar.openTab(tab.index)
                         }
                     }
                 }
             }
-        }
-
-        Text {
-            x: tabs.x + tabs.width + 28
-            anchors.verticalCenter: parent.verticalCenter
-            visible: x + implicitWidth < headerRight.x - 20
-            text: qsTr("Tab: next tab   ·   O: order   ·   F: favorite   ·   Esc: back to TV")
-            color: Theme.textMuted
-            font.pixelSize: Theme.fontSmall
         }
 
         CloseButton {
@@ -229,9 +286,10 @@ FocusScope {
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 10
+            visible: !root.browsing || root.searchOpen
             // Room between the tabs and ✕ (a narrow window: the search box
             // shrinks, then the order button shows only ⇅).
-            readonly property real room: closeButton.x - 12 - (tabs.x + tabs.width + 20)
+            readonly property real room: closeButton.x - 12 - (tabBar.x + tabBar.width + 20)
             readonly property bool compactSort: room - (sortFull.width + 32) - spacing < 160
             // Very narrow: no order button at all (O still changes the order).
             readonly property bool noSort: room - 44 - spacing < 120
@@ -241,10 +299,8 @@ FocusScope {
                 visible: !root.browsing && !headerRight.noSort
                 height: 44
                 width: headerRight.compactSort ? 44 : sortFull.width + 32
-                radius: Theme.radius
-                color: sortMouse.containsMouse ? Theme.focus : Theme.raised
-                border.width: 1
-                border.color: Theme.border
+                radius: 22
+                color: sortMouse.containsMouse ? "#38FFFFFF" : "#22FFFFFF"
                 Text {
                     id: sortText
                     anchors.centerIn: parent
@@ -272,7 +328,7 @@ FocusScope {
 
             TextField {
                 id: searchField
-                width: Math.max(96, Math.min(360, root.width * 0.28,
+                width: Math.max(96, Math.min(360, root.width * 0.26,
                                              headerRight.room - (root.browsing || headerRight.noSort ? 0
                                                                  : (headerRight.compactSort ? 44 : sortFull.width + 32) + headerRight.spacing)))
                 height: 44
@@ -285,25 +341,26 @@ FocusScope {
                 selectionColor: Theme.accent
                 selectedTextColor: Theme.accentText
                 background: Rectangle {
-                    radius: Theme.radius
-                    color: Theme.raised
-                    border.width: searchField.activeFocus ? 2 : 1
-                    border.color: searchField.activeFocus ? Theme.accent : Theme.border
+                    radius: 22
+                    color: "#22FFFFFF"
+                    border.width: searchField.activeFocus ? 2 : 0
+                    border.color: Theme.text
                 }
-                Text {
-                    x: 13
+                Icon {
+                    x: 14
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "⌕"
+                    width: 18; height: 18
+                    path: Icons.search
                     color: Theme.textMuted
-                    font.pixelSize: 20
                 }
                 onTextChanged: { filterTimer.restart(); if (text.length) root.browsing = false }
+                Keys.onUpPressed: tabBar.forceActiveFocus()
                 Keys.onDownPressed: root.browsing ? home.focusRows() : grid.forceActiveFocus()
                 Keys.onReturnPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
                 Keys.onEnterPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
                 Keys.onEscapePressed: {
-                    if (text.length) { text = ""; Vod.filter = ""; root.showHome() }
-                    else root.browsing ? home.focusRows() : grid.forceActiveFocus()
+                    if (text.length) { text = ""; Vod.filter = ""; root.searchOpen = false; root.showHome() }
+                    else { root.searchOpen = false; root.browsing ? home.focusRows() : grid.forceActiveFocus() }
                 }
                 Keys.onTabPressed: { root.switchSection(); root.browsing ? home.focusRows() : grid.forceActiveFocus() }
             }
@@ -598,9 +655,9 @@ FocusScope {
     VodHome {
         id: home
         visible: root.browsing && root.opened && !details.opened
-        anchors.top: header.bottom
-        anchors.bottom: parent.bottom
-        width: parent.width
+        anchors.fill: parent
+        topInset: header.height
+        onUpFromTop: tabBar.forceActiveFocus()
         onOpenDetails: (kind, id, preview) => details.open(kind, id, preview)
         onSeeAll: (id) => root.seeAll(id)
         onPlay: (d) => root.playRequested(d)
@@ -610,7 +667,8 @@ FocusScope {
             if (e.key === Qt.Key_Backspace) { root.close(); e.accepted = true; return }
             // Typing searches.
             if (e.text.length && e.text.charCodeAt(0) > 32 && !(e.modifiers & Qt.ControlModifier)
-                    && e.key !== Qt.Key_P && e.key !== Qt.Key_F) {
+                    && e.key !== Qt.Key_P && e.key !== Qt.Key_F && e.key !== Qt.Key_M) {
+                root.searchOpen = true
                 searchField.forceActiveFocus()
                 searchField.insert(searchField.cursorPosition, e.text)
                 e.accepted = true

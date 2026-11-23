@@ -91,6 +91,7 @@ QVariantMap itemMap(const VodItem &it, const QString &kind)
         {QStringLiteral("poster"), it.poster},
         {QStringLiteral("year"), it.year},
         {QStringLiteral("rating"), it.rating},
+        {QStringLiteral("added"), it.added},   // seconds since 1970, 0: the server doesn't say
     };
 }
 
@@ -307,19 +308,25 @@ void VodService::publish(const QVariantMap &d)
     const bool gaps = d.value(QStringLiteral("plot")).toString().isEmpty() || d.value(QStringLiteral("poster")).toString().isEmpty()
         || d.value(QStringLiteral("backdrop")).toString().isEmpty() || d.value(QStringLiteral("cast")).toString().isEmpty()
         || (series && episodeGaps);
-    if (!m_tmdb->active() || !gaps) { send(d); return; }
+    if (!m_tmdb->active()) { send(d); return; }
+    // Nothing missing: shown now, and TMDB's extras (logo, age rating,
+    // writers) follow when they're here (usually from its cache).
+    if (!gaps) send(d);
 
     const quint64 gen = m_generation;
     const QString kind = series ? QStringLiteral("series") : QStringLiteral("movie");
     m_tmdb->details(kind, d.value(QStringLiteral("title")).toString(), d.value(QStringLiteral("year")).toString(),
-                    series && episodeGaps ? seasons : QList<int>(), this, [this, gen, d, kind, send](const QVariantMap &t) {
+                    series && episodeGaps ? seasons : QList<int>(), this, [this, gen, d, kind, send, gaps](const QVariantMap &t) {
         if (gen != m_generation) return;
-        if (t.isEmpty()) { send(d); return; }
+        if (t.isEmpty()) { if (gaps) send(d); return; }
         QVariantMap out = d;
-        for (const char *k : {"plot", "poster", "backdrop", "genre", "cast", "director", "duration", "year", "trailer"}) {
+        bool added = false;
+        for (const char *k : {"plot", "poster", "backdrop", "genre", "cast", "director", "duration", "year", "trailer",
+                              "logo", "certification", "writer"}) {
             const QString key = QLatin1String(k);
-            if (out.value(key).toString().isEmpty() && !t.value(key).toString().isEmpty()) out.insert(key, t.value(key));
+            if (out.value(key).toString().isEmpty() && !t.value(key).toString().isEmpty()) { out.insert(key, t.value(key)); added = true; }
         }
+        if (!gaps && !added) return;   // already sent, and TMDB had nothing more
         if (out.value(QStringLiteral("rating")).toDouble() <= 0) out.insert(QStringLiteral("rating"), t.value(QStringLiteral("rating")));
         const QVariantMap eps = t.value(QStringLiteral("episodes")).toMap();
         if (!eps.isEmpty()) {

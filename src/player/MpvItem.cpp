@@ -254,6 +254,11 @@ MpvItem::MpvItem(QQuickItem *parent)
         qCritical() << "mpv: mpv_initialize failed";
         return;
     }
+    // A picture shape set before mpv started (trailers fill their area).
+    if (m_shape == QLatin1String("fill")) mpv_set_property_string(mpv, "panscan", "1.0");
+    else if (m_shape == QLatin1String("stretch")) mpv_set_property_string(mpv, "keepaspect", "no");
+    else if (m_shape == QLatin1String("16:9") || m_shape == QLatin1String("4:3"))
+        mpv_set_property_string(mpv, "video-aspect-override", m_shape.toUtf8().constData());
     // RELAY_MPV_LOG=v (or debug) for troubleshooting playback.
     const QByteArray logLevel = qEnvironmentVariableIsSet("RELAY_MPV_LOG")
         ? qgetenv("RELAY_MPV_LOG") : QByteArray("error");

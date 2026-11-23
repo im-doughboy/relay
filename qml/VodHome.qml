@@ -4,35 +4,86 @@ import QtQuick.Window
 import Relay.Core
 import Relay.Video
 
-// Movies or series, browsed like a streaming service: a spotlight on the
-// selected title (backdrop, what it is, a trailer after a moment), and rows
-// of posters under it: Continue watching, Favorites, Recently added, Top
-// rated, then the provider's categories. The last card of a row is "See all".
+// Movies or series, browsed like a streaming service:
+//  - a spotlight card on top (a featured title, its trailer playing in it,
+//    Play and More info), the page tinted by its picture;
+//  - the provider's categories as a row of chips;
+//  - rows of posters: Continue watching, Favorites, Recently added, Top
+//    rated, then the categories. The selected row rises to the top, its
+//    selected card widens into a 16:9 picture that plays the trailer after
+//    a moment, and what the title is shows under the row.
 //
-// Keys: arrows move, Enter opens the title (or See all), P plays it, F adds
-// it to favorites, Up from the first row reaches the spotlight's buttons.
+// Keys: arrows move, Enter opens (or plays from the spotlight), P plays,
+// F adds to favorites, M turns the trailer's sound on or off. Up from the
+// spotlight reaches the tabs.
 FocusScope {
     id: root
     signal openDetails(string kind, string id, var preview)
     signal seeAll(string shelfId)
     signal play(var descriptor)
     signal message(string text)
+    signal upFromTop()
 
+    property int topInset: 0               // the tabs float over the page
     property var shelves: []
-    property var selected: null          // the title in the spotlight
-    property var info: ({})              // its details, once they're here
-    readonly property bool infoReady: !!selected && info.id === selected.id && info.kind === selected.kind
-    readonly property int cardWidth: Math.round(Math.max(118, Math.min(190, width / 7.6)))
-    readonly property int cardHeight: Math.round(cardWidth * 1.5)
+    property var featured: null            // the spotlight's title
+    property var infos: ({})                // details as they arrive, by "kind:id"
+    property var selected: null             // what the keys are on (a card, or the spotlight's title)
+
+    readonly property real side: Math.round(Math.max(24, Math.min(64, width * 0.035)))
+    readonly property real viewH: height - topInset
+    readonly property int cardH: Math.round(Math.max(170, Math.min(430, viewH * 0.42)))
+    readonly property int cardW: Math.round(cardH * 2 / 3)
+    readonly property int wideW: Math.round(cardH * 16 / 9)
+    readonly property int heroH: Math.round(Math.max(230, Math.min(760, viewH * 0.72)))
+    readonly property int chipH: Math.round(Math.max(46, Math.min(96, viewH * 0.1)))
+    readonly property int font1: Math.round(Math.max(Theme.fontSmall, Math.min(22, viewH * 0.024)))
+
     // On screen (not minimized or hidden): trailers may play.
     readonly property bool active: visible && root.Window.visibility !== Window.Minimized && root.Window.visibility !== Window.Hidden
                                    && Qt.application.state !== Qt.ApplicationHidden && Qt.application.state !== Qt.ApplicationSuspended
+    readonly property var chips: (Vod.categories || []).filter(c => String(c.id).startsWith("c:"))
+    readonly property var entries: {
+        const out = [{ type: "hero" }]
+        if (chips.length) out.push({ type: "chips" })
+        for (const s of shelves) out.push({ type: "shelf", shelf: s })
+        return out
+    }
+
+    function keyOf(item) { return item ? item.kind + ":" + item.id : "" }
+    function infoOf(item) { return item ? root.infos[keyOf(item)] || null : null }
 
     function reload() {
-        const before = selected
-        shelves = Vod.shelves(24)
-        if (!before || !shelves.some(s => s.items.some(i => i.id === before.id && i.kind === before.kind)))
-            select(shelves.length ? shelves[0].items[0] : null)
+        shelves = Vod.shelves(30)
+        // The spotlight: one of the newest (or best rated) titles with a picture, kept while browsing.
+        const pool = []
+        for (const id of ["recent", "top"]) {
+            const s = shelves.find(x => x.id === id)
+            if (s) for (const it of s.items.slice(0, 10)) if (it.poster) pool.push(it)
+            if (pool.length) break
+        }
+        if (!pool.length && shelves.length) pool.push(...shelves[0].items.slice(0, 6))
+        if (!featured || !pool.some(i => i.id === featured.id && i.kind === featured.kind))
+            featured = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null
+        if (featured) Vod.requestDetails(featured.kind, featured.id)
+        syncSelection()
+    }
+    // Back to the top (opening the page, or a new tab).
+    function reset() {
+        rows.cols = ({})
+        rows.currentIndex = 0
+        rows.positionViewAtBeginning()
+        heroButtons.current = 0
+        syncSelection()
+    }
+    function focusRows() { rows.forceActiveFocus(); syncSelection() }
+
+    function syncSelection() {
+        const e = entries[rows.currentIndex]
+        let item = null
+        if (e && e.type === "hero") item = featured
+        else if (e && e.type === "shelf") item = e.shelf.items[rows.col(rows.currentIndex)] || null
+        select(item)
     }
     function select(item) {
         if (item && selected && item.id === selected.id && item.kind === selected.kind) return
@@ -40,26 +91,52 @@ FocusScope {
         stopTrailer()
         if (item) detailsTimer.restart()
     }
-    function focusRows() { rows.forceActiveFocus() }
-    function playSelected() {
-        if (!selected) return
-        if (selected.kind === "series" || !infoReady) { openDetails(selected.kind, selected.id, selected); return }
+    function playItem(item) {
+        if (!item) return
+        const info = infoOf(item)
+        if (item.kind === "series" || !info) { openDetails(item.kind, item.id, item); return }
         const d = Vod.playback(info, -1, false)
         if (d.url) play(d)
-        else openDetails(selected.kind, selected.id, selected)
+        else openDetails(item.kind, item.id, item)
     }
-    function toggleFavorite() {
-        if (!selected) return
-        const fav = Vod.toggleFavorite(selected.kind, selected.id)
+    function toggleFavorite(item) {
+        if (!item) return
+        const fav = Vod.toggleFavorite(item.kind, item.id)
         message(fav ? qsTr("Added to favorites") : qsTr("Removed from favorites"))
         reloadTimer.restart()
     }
+    function metaLine(item, info) {
+        if (!item) return ""
+        const i = info || ({})
+        const parts = [item.kind === "series" ? qsTr("Series") : qsTr("Movie")]
+        if (i.genre) parts.push(i.genre.split(",")[0].trim())
+        if (i.year || item.year) parts.push(i.year || item.year)
+        if (item.kind === "series" && i.seasons && i.seasons.length)
+            parts.push(i.seasons.length === 1 ? qsTr("1 season") : qsTr("%1 seasons").arg(i.seasons.length))
+        else if (i.duration) parts.push(i.duration)
+        if (i.certification) parts.push(i.certification)
+        const r = i.rating || item.rating
+        if (r > 0) parts.push("★ " + Number(r).toFixed(1))
+        return parts.join("  •  ")
+    }
+    function badges(item, info) {
+        if (!item) return []
+        const out = []
+        const now = Date.now() / 1000
+        if (item.added > 0 && now - item.added < 21 * 86400) out.push(qsTr("Recently added"))
+        const r = (info && info.rating) || item.rating
+        if (r >= 7.5) out.push(qsTr("Top rated"))
+        if (info && info.favorite) out.push(qsTr("In favorites"))
+        return out
+    }
 
-    // ---- Trailer -------------------------------------------------------------
-    property string trailerFor: ""       // the trailer playing (or being fetched)
+    // ---- Trailer: one player, shown over the selected card or the spotlight ----------
+    property string trailerFor: ""
     property bool trailerMuted: true
+    property Item trailerHost: null        // where it plays (the spotlight's picture or a card's)
     function startTrailer() {
-        if (!infoReady || !info.trailer || !Trailers.autoplay || !active) return
+        const info = infoOf(selected)
+        if (!info || !info.trailer || !Trailers.autoplay || !active || !rows.activeFocus) return
         trailerFor = info.trailer
         Trailers.resolve(info.trailer)
     }
@@ -69,19 +146,22 @@ FocusScope {
     }
     onActiveChanged: if (!active) stopTrailer()
 
-    Timer { id: detailsTimer; interval: 300; onTriggered: if (root.selected && root.visible) Vod.requestDetails(root.selected.kind, root.selected.id) }
-    Timer { id: trailerTimer; interval: 1800; onTriggered: root.startTrailer() }
+    Timer { id: detailsTimer; interval: 250; onTriggered: if (root.selected && root.visible) Vod.requestDetails(root.selected.kind, root.selected.id) }
+    Timer { id: trailerTimer; interval: 1600; onTriggered: root.startTrailer() }
     Timer { id: reloadTimer; interval: 150; onTriggered: if (root.visible) root.reload() }
 
     Connections {
         target: Vod
         function onDetailsReady(d) {
-            if (!root.selected || d.id !== root.selected.id || d.kind !== root.selected.kind) return
-            root.info = d
-            if (d.trailer && Trailers.autoplay) trailerTimer.restart()
+            const k = d.kind + ":" + d.id
+            const all = Object.keys(root.infos).length > 120 ? ({}) : Object.assign({}, root.infos)
+            all[k] = d
+            root.infos = all
+            if (root.selected && k === root.keyOf(root.selected) && d.trailer && Trailers.autoplay && root.trailerFor === "")
+                trailerTimer.restart()
         }
         function onStateChanged() { reloadTimer.restart() }
-        function onSectionChanged() { root.selected = null; reloadTimer.restart() }
+        function onSectionChanged() { root.featured = null; root.selected = null; reloadTimer.restart() }
         function onCategoriesChanged() { reloadTimer.restart() }
     }
     Connections {
@@ -89,285 +169,464 @@ FocusScope {
         function onResolved(t, video, audio) { if (t === root.trailerFor) trailer.playTrailer(video, audio) }
         function onFailed(t, msg) { if (t === root.trailerFor) root.trailerFor = "" }
     }
-    // Only while on screen: then the spotlight's title (again) gets its details and trailer.
     onVisibleChanged: {
         if (!visible) { stopTrailer(); return }
         reload()
         if (selected) detailsTimer.restart()
     }
 
-    // ---- Spotlight ---------------------------------------------------------------
-    FocusScope {
-        id: spotlight
-        width: parent.width
-        height: Math.round(Math.max(230, Math.min(parent.height * 0.5, 520)))
-        clip: true
-
-        // Backdrop, or the poster large and dimmed when there's none.
+    // ---- The page's tint: the selected title's picture, blurred and dimmed ---------
+    Item {
+        id: tint
+        anchors.fill: parent
+        readonly property var info: root.infoOf(root.selected) || root.infoOf(root.featured)
+        readonly property string wanted: info && info.backdrop ? info.backdrop : (root.selected ? root.selected.poster || "" : "")
+        property bool useA: true
+        onWantedChanged: {
+            if (useA) tintB.source = wanted; else tintA.source = wanted
+            useA = !useA
+        }
+        Rectangle { anchors.fill: parent; color: Theme.background }
         Image {
-            id: backdrop
-            anchors.right: parent.right
-            width: parent.width * 0.72
-            height: parent.height
-            source: root.infoReady && root.info.backdrop ? root.info.backdrop : ""
-            fillMode: Image.PreserveAspectCrop
+            id: tintA
+            anchors.fill: parent
+            sourceSize: Qt.size(48, 27)     // tiny, then stretched: a soft wash of the picture's colours
+            smooth: true
             asynchronous: true
-            cache: true
-            opacity: status === Image.Ready && !trailer.playing ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 400 } }
+            opacity: tint.useA && status === Image.Ready ? 0.5 : 0
+            Behavior on opacity { NumberAnimation { duration: 700 } }
         }
         Image {
-            anchors.right: parent.right
-            width: parent.width * 0.72
-            height: parent.height
-            visible: backdrop.status !== Image.Ready
-            source: root.selected ? root.selected.poster || "" : ""
-            fillMode: Image.PreserveAspectCrop
+            id: tintB
+            anchors.fill: parent
+            sourceSize: Qt.size(48, 27)
+            smooth: true
             asynchronous: true
-            opacity: status === Image.Ready ? 0.28 : 0
-            Behavior on opacity { NumberAnimation { duration: 400 } }
-        }
-        // The trailer, muted unless asked, over the backdrop.
-        MpvVideo {
-            id: trailer
-            anchors.right: parent.right
-            width: parent.width * 0.72
-            height: parent.height
-            timeshiftMb: 0
-            muted: root.trailerMuted
-            volume: 80
-            opacity: playing && root.trailerFor !== "" ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 500 } }
-            onPlaybackError: root.trailerFor = ""
-        }
-        // Fade into the page from the left and at the bottom.
-        Rectangle {
-            anchors.right: backdrop.right
-            width: backdrop.width
-            height: parent.height
-            gradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: Theme.background }
-                GradientStop { position: 0.38; color: "#C00B0D12" }
-                GradientStop { position: 0.7; color: "#200B0D12" }
-                GradientStop { position: 1.0; color: "transparent" }
-            }
+            opacity: !tint.useA && status === Image.Ready ? 0.5 : 0
+            Behavior on opacity { NumberAnimation { duration: 700 } }
         }
         Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: parent.height * 0.45
+            anchors.fill: parent
             gradient: Gradient {
-                GradientStop { position: 0.0; color: "transparent" }
+                GradientStop { position: 0.0; color: "#66000000" }
+                GradientStop { position: 0.45; color: "#D0000000" }
                 GradientStop { position: 1.0; color: Theme.background }
             }
         }
+    }
 
-        Column {
-            id: about
-            x: 40
-            width: parent.width < 900 ? parent.width - 80 : Math.min(parent.width * 0.48, 620)
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 22
-            spacing: 10
+    // The trailer, under the page: the card it belongs to is see-through while it plays.
+    MpvVideo {
+        id: trailer
+        timeshiftMb: 0
+        pictureShape: "fill"      // cropped to the card, no black bars
+        muted: root.trailerMuted
+        volume: 80
+        visible: root.trailerHost !== null && root.trailerFor !== "" && playing
+        opacity: visible ? 1 : 0
+        onPlaybackError: root.trailerFor = ""
+        onFinished: root.trailerFor = ""
+        layer.enabled: root.canRound
+        layer.effect: roundedFx
+        // Follows its card as the rows move.
+        Timer {
+            interval: 16
+            repeat: true
+            running: root.trailerHost !== null && root.trailerFor !== ""
+            triggeredOnStart: true
+            onTriggered: {
+                const h = root.trailerHost
+                if (!h) return
+                const p = h.mapToItem(root, 0, 0)
+                trailer.x = p.x; trailer.y = p.y; trailer.width = h.width; trailer.height = h.height
+            }
+        }
+    }
+    readonly property bool trailerShowing: trailer.visible
+    // Rounded corners where Qt can (6.5+) and the graphics draw effects
+    // (software drawing doesn't: the corners stay square there).
+    property Component roundedFx: Qt.createComponent("RoundedEffect.qml", Component.PreferSynchronous)
+    readonly property bool canRound: roundedFx.status === Component.Ready
+                                     && root.GraphicsInfo.api !== GraphicsInfo.Software && root.GraphicsInfo.api !== GraphicsInfo.Unknown
 
-            Text {
-                width: parent.width
-                text: root.selected ? root.selected.title : (Vod.loading ? qsTr("Loading…") : qsTr("Nothing here yet"))
-                color: Theme.text
-                font.pixelSize: Math.round(Theme.fontTitle * 1.6)
-                font.weight: Font.Bold
-                wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
-            }
-            Text {
-                width: parent.width
-                visible: text.length > 0
-                text: {
-                    const s = root.selected
-                    if (!s) return ""
-                    const i = root.infoReady ? root.info : ({})
-                    const parts = []
-                    if (i.year || s.year) parts.push(i.year || s.year)
-                    if (i.duration) parts.push(i.duration)
-                    const r = i.rating || s.rating
-                    if (r > 0) parts.push("★ " + Number(r).toFixed(1))
-                    if (i.genre) parts.push(i.genre.split(",").slice(0, 3).map(g => g.trim()).join(" · "))
-                    return parts.join("   ·   ")
-                }
-                color: Theme.textSecondary
-                font.pixelSize: Theme.fontBody - 1
-                elide: Text.ElideRight
-            }
-            Text {
-                width: parent.width
-                visible: root.infoReady && !!root.info.plot && spotlight.height > 300
-                text: root.infoReady ? root.info.plot || "" : ""
-                color: Theme.textSecondary
-                font.pixelSize: Theme.fontBody - 1
-                wrapMode: Text.Wrap
-                maximumLineCount: spotlight.height > 420 ? 3 : 2
-                elide: Text.ElideRight
-                lineHeight: 1.15
-            }
-            Row {
-                id: buttons
-                spacing: 10
-                topPadding: 4
-                property int current: 0
-                readonly property var list: [playButton, infoButton, favButton].concat(muteButton.visible ? [muteButton] : [])
-                function move(d) { current = Math.max(0, Math.min(list.length - 1, current + d)) }
-                focus: true
-                Keys.onLeftPressed: move(-1)
-                Keys.onRightPressed: move(1)
-                Keys.onDownPressed: rows.forceActiveFocus()
-                Keys.onReturnPressed: list[current].clicked()
-                Keys.onEnterPressed: list[current].clicked()
-                readonly property bool keys: spotlight.activeFocus
+    // ---- The page ---------------------------------------------------------------
+    ListView {
+        id: rows
+        anchors.fill: parent
+        anchors.topMargin: root.topInset      // nothing behind the tabs
+        clip: true
+        model: root.entries
+        focus: true
+        interactive: false
+        keyNavigationEnabled: false
+        cacheBuffer: Math.max(1200, height * 2)
+        // The selected row sits just under the tabs.
+        highlightRangeMode: ListView.StrictlyEnforceRange
+        preferredHighlightBegin: 4
+        preferredHighlightEnd: 5
+        highlightMoveDuration: 280
+        highlightMoveVelocity: -1
+        footer: Item { width: 1; height: rows.height * 0.5 }
 
-                BarButton {
-                    id: playButton
-                    accent: true
-                    icon: Icons.play; iconFilled: true
-                    label: root.selected && root.selected.kind === "series" ? qsTr("Episodes")
-                         : root.selected && root.selected.progress > 0 ? qsTr("Resume") : qsTr("Play")
-                    shortcut: "P"
-                    showShortcut: false
-                    border.width: buttons.keys && buttons.current === 0 ? 2 : 0
-                    border.color: Theme.text
-                    onClicked: root.playSelected()
+        property var cols: ({})              // the column each row was left at
+        function col(r) { return cols[r] || 0 }
+        function setCol(r, c) { const all = Object.assign({}, cols); all[r] = c; cols = all }
+        function go(r) {
+            if (r < 0 || r >= count) return
+            currentIndex = r
+            root.syncSelection()
+        }
+        function step(dc) {
+            const e = root.entries[currentIndex]
+            if (!e) return
+            if (e.type === "hero") { heroButtons.move(dc); return }
+            const n = e.type === "chips" ? root.chips.length - 1 : e.shelf.items.length   // the last: See all
+            setCol(currentIndex, Math.max(0, Math.min(n, col(currentIndex) + dc)))
+            root.syncSelection()
+        }
+        function activate() {
+            const e = root.entries[currentIndex]
+            if (!e) return
+            if (e.type === "hero") { heroButtons.press(); return }
+            if (e.type === "chips") { const c = root.chips[col(currentIndex)]; if (c) root.seeAll(c.id); return }
+            const c = col(currentIndex)
+            if (c >= e.shelf.items.length) root.seeAll(e.shelf.id)
+            else { const it = e.shelf.items[c]; root.openDetails(it.kind, it.id, it) }
+        }
+        onActiveFocusChanged: {
+            if (activeFocus) { root.syncSelection(); if (root.trailerFor === "") trailerTimer.restart() }
+            else root.stopTrailer()
+        }
+
+        Keys.onPressed: (e) => {
+            switch (e.key) {
+            case Qt.Key_Left: step(-1); break
+            case Qt.Key_Right: step(1); break
+            case Qt.Key_Up: if (currentIndex > 0) go(currentIndex - 1); else root.upFromTop(); break
+            case Qt.Key_Down: go(currentIndex + 1); break
+            case Qt.Key_PageUp: go(Math.max(0, currentIndex - 3)); break
+            case Qt.Key_PageDown: go(Math.min(count - 1, currentIndex + 3)); break
+            case Qt.Key_Home: setCol(currentIndex, 0); root.syncSelection(); break
+            case Qt.Key_Return:
+            case Qt.Key_Enter: activate(); break
+            case Qt.Key_P: root.playItem(root.selected); break
+            case Qt.Key_F: root.toggleFavorite(root.selected); break
+            case Qt.Key_M: root.trailerMuted = !root.trailerMuted; break
+            default: return
+            }
+            e.accepted = true
+        }
+        // The wheel moves a row at a time (Shift: along the row).
+        WheelHandler {
+            property real acc: 0
+            onWheel: (ev) => {
+                const d = ev.angleDelta.y !== 0 ? ev.angleDelta.y : ev.angleDelta.x
+                acc += d
+                if (Math.abs(acc) < 100) return
+                const dir = acc > 0 ? -1 : 1
+                acc = 0
+                if (ev.modifiers & Qt.ShiftModifier || ev.angleDelta.x !== 0) rows.step(dir)
+                else rows.go(Math.max(0, Math.min(rows.count - 1, rows.currentIndex + dir)))
+            }
+        }
+
+        delegate: Item {
+            id: entry
+            required property var modelData
+            required property int index
+            readonly property bool isCurrent: rows.currentIndex === index
+            width: rows.width
+            height: loader.item ? loader.item.height : 0
+            Loader {
+                id: loader
+                width: parent.width
+                property var entry: entry.modelData
+                property int entryIndex: entry.index
+                property bool isCurrent: entry.isCurrent
+                sourceComponent: entry.modelData.type === "hero" ? heroComp
+                               : entry.modelData.type === "chips" ? chipsComp : shelfComp
+            }
+        }
+
+        // Nothing to show (still loading, or an empty catalogue).
+        Text {
+            anchors.centerIn: parent
+            visible: root.shelves.length === 0
+            width: parent.width - 80
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            text: Vod.loading ? qsTr("Loading…") : Vod.error || qsTr("No titles yet")
+            color: Theme.textMuted
+            font.pixelSize: Theme.fontBody
+        }
+    }
+
+    // ---- Spotlight ---------------------------------------------------------------------
+    // The buttons' state lives here (the card itself may be recreated).
+    QtObject {
+        id: heroButtons
+        property int current: 0
+        readonly property int count: root.trailerShowing && root.trailerHost && root.trailerHost.objectName === "hero" ? 3 : 2
+        function move(d) { current = Math.max(0, Math.min(count - 1, current + d)) }
+        function press() {
+            if (current === 0) root.playItem(root.featured)
+            else if (current === 1) { if (root.featured) root.openDetails(root.featured.kind, root.featured.id, root.featured) }
+            else root.trailerMuted = !root.trailerMuted
+        }
+    }
+
+    Component {
+        id: heroComp
+        Item {
+            id: hero
+            readonly property bool keys: parent.isCurrent && rows.activeFocus
+            readonly property var item: root.featured
+            readonly property var info: root.infoOf(item)
+            width: parent.width
+            height: root.heroH + 18
+            // The trailer plays in the card's picture while the spotlight is selected.
+            function claim() { if (keys) root.trailerHost = picture; else if (root.trailerHost === picture) root.trailerHost = null }
+            onKeysChanged: claim()
+            Component.onCompleted: claim()
+            Component.onDestruction: if (root.trailerHost === picture) root.trailerHost = null
+
+            Rectangle {
+                id: card
+                x: root.side
+                width: parent.width - 2 * root.side
+                height: root.heroH
+                radius: 14
+                color: "#22FFFFFF"
+                layer.enabled: root.canRound
+                layer.effect: roundedFx
+
+                Item {
+                    id: picture
+                    objectName: "hero"
+                    anchors.fill: parent
+                    Image {
+                        id: heroBackdrop
+                        anchors.fill: parent
+                        source: hero.info && hero.info.backdrop ? hero.info.backdrop : ""
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        sourceSize.width: 1600
+                        opacity: status === Image.Ready && !(root.trailerShowing && root.trailerHost === picture) ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: 500 } }
+                    }
+                    Image {   // no backdrop: the poster, large and soft
+                        anchors.fill: parent
+                        visible: heroBackdrop.status !== Image.Ready
+                        source: hero.item ? hero.item.poster || "" : ""
+                        fillMode: Image.PreserveAspectCrop
+                        sourceSize.width: 400
+                        asynchronous: true
+                        opacity: 0.45
+                    }
                 }
-                BarButton {
-                    id: infoButton
-                    icon: Icons.info
-                    label: qsTr("More info")
-                    showShortcut: false
-                    active: buttons.keys && buttons.current === 1
-                    onClicked: if (root.selected) root.openDetails(root.selected.kind, root.selected.id, root.selected)
+                // Text stays readable over any picture.
+                Rectangle {
+                    anchors.fill: parent
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: "#C0000000" }
+                        GradientStop { position: 0.45; color: "#40000000" }
+                        GradientStop { position: 0.75; color: "transparent" }
+                    }
                 }
-                BarButton {
-                    id: favButton
-                    icon: Icons.heart
-                    iconFilled: root.infoReady && !!root.info.favorite
-                    label: qsTr("Favorite")
-                    shortcut: "F"
-                    showLabel: false
-                    active: buttons.keys && buttons.current === 2
-                    onClicked: { root.toggleFavorite(); if (root.selected) Vod.requestDetails(root.selected.kind, root.selected.id) }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    height: parent.height * 0.55
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "transparent" }
+                        GradientStop { position: 1.0; color: "#B0000000" }
+                    }
                 }
-                BarButton {
-                    id: muteButton
-                    visible: trailer.playing && root.trailerFor !== ""
-                    icon: root.trailerMuted ? Icons.muted : Icons.volume
-                    label: root.trailerMuted ? qsTr("Trailer sound on") : qsTr("Trailer sound off")
-                    showLabel: false
-                    active: buttons.keys && buttons.current === 3
-                    onClicked: root.trailerMuted = !root.trailerMuted
+
+                Column {
+                    id: about
+                    x: Math.round(card.width * 0.035)
+                    width: Math.min(card.width * 0.5, 760)
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Math.round(card.height * 0.07)
+                    spacing: Math.round(root.font1 * 0.6)
+
+                    TitleArt {
+                        item: hero.item
+                        info: hero.info
+                        maxWidth: Math.min(about.width, card.width * 0.36)
+                        maxHeight: card.height * 0.26
+                        fontSize: Math.round(Math.max(28, Math.min(64, card.height * 0.1)))
+                    }
+                    Text {
+                        width: parent.width
+                        text: root.metaLine(hero.item, hero.info)
+                        color: Theme.text
+                        font.pixelSize: root.font1 - 2
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
+                        style: Text.Raised; styleColor: "#60000000"
+                    }
+                    Text {
+                        width: parent.width
+                        visible: hero.keys && hero.info && !!hero.info.plot && card.height > 320
+                        text: hero.info ? hero.info.plot || "" : ""
+                        color: Theme.text
+                        opacity: 0.9
+                        font.pixelSize: root.font1 - 1
+                        lineHeight: 1.15
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 3
+                        elide: Text.ElideRight
+                        style: Text.Raised; styleColor: "#60000000"
+                    }
+                    Row {
+                        spacing: 12
+                        topPadding: 6
+                        PillButton {
+                            icon: Icons.play; iconFilled: true
+                            text: hero.item && hero.item.kind === "series" ? qsTr("Episodes") : qsTr("Play")
+                            fontSize: root.font1 - 1
+                            lit: hero.keys && heroButtons.current === 0
+                            onClicked: root.playItem(root.featured)
+                        }
+                        PillButton {
+                            icon: Icons.info
+                            text: qsTr("More info")
+                            fontSize: root.font1 - 1
+                            lit: hero.keys && heroButtons.current === 1
+                            onClicked: if (root.featured) root.openDetails(root.featured.kind, root.featured.id, root.featured)
+                        }
+                        PillButton {
+                            visible: heroButtons.count === 3
+                            icon: root.trailerMuted ? Icons.muted : Icons.volume
+                            fontSize: root.font1 - 1
+                            lit: hero.keys && heroButtons.current === 2
+                            onClicked: root.trailerMuted = !root.trailerMuted
+                        }
+                    }
+                }
+                Badges {
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Math.round(card.height * 0.05)
+                    list: root.badges(hero.item, hero.info)
+                    fontSize: root.font1 - 4
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    z: -1
+                    onClicked: { rows.forceActiveFocus(); rows.go(hero.parent.entryIndex) }
+                    onDoubleClicked: if (root.featured) root.openDetails(root.featured.kind, root.featured.id, root.featured)
                 }
             }
         }
     }
 
-    // ---- Rows ------------------------------------------------------------------------
-    ListView {
-        id: rows
-        anchors.top: spotlight.bottom
-        anchors.bottom: parent.bottom
-        width: parent.width
-        clip: true
-        model: root.shelves
-        spacing: 6
-        bottomMargin: 30
-        keyNavigationEnabled: false
-        highlightMoveDuration: 220
-        highlightRangeMode: ListView.ApplyRange
-        preferredHighlightBegin: 0
-        preferredHighlightEnd: root.cardHeight * 1.2 + 100
-        boundsBehavior: Flickable.StopAtBounds
-        cacheBuffer: 600
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-        focus: true
-
-        // The column each row was left at.
-        property var columns: ({})
-        function cardsOf(r) { const it = itemAtIndex(r); return it ? it.cards : null }
-        function selectAt(r, c) {
-            if (r < 0 || r >= count) return
-            currentIndex = r
-            const items = root.shelves[r].items
-            c = Math.max(0, Math.min(items.length, c))   // items.length: See all
-            columns[r] = c
-            const cards = cardsOf(r)
-            if (cards) { cards.currentIndex = c; cards.positionViewAtIndex(c, ListView.Contain) }
-            if (c < items.length) root.select(items[c])
-        }
-        function column() { return columns[currentIndex] || 0 }
-        onActiveFocusChanged: if (activeFocus && count) selectAt(Math.max(0, currentIndex), column())
-
-        Keys.onPressed: (e) => {
-            const r = currentIndex, c = column()
-            const items = r >= 0 && r < root.shelves.length ? root.shelves[r].items : []
-            switch (e.key) {
-            case Qt.Key_Left: selectAt(r, c - 1); break
-            case Qt.Key_Right: selectAt(r, c + 1); break
-            case Qt.Key_Up:
-                if (r > 0) selectAt(r - 1, columns[r - 1] !== undefined ? columns[r - 1] : 0)
-                else spotlight.forceActiveFocus()
-                break
-            case Qt.Key_Down: selectAt(r + 1, columns[r + 1] !== undefined ? columns[r + 1] : 0); break
-            case Qt.Key_PageUp: selectAt(Math.max(0, r - 3), 0); break
-            case Qt.Key_PageDown: selectAt(Math.min(count - 1, r + 3), 0); break
-            case Qt.Key_Home: selectAt(r, 0); break
-            case Qt.Key_End: selectAt(r, items.length); break
-            case Qt.Key_Return:
-            case Qt.Key_Enter:
-                if (c >= items.length) root.seeAll(root.shelves[r].id)
-                else root.openDetails(items[c].kind, items[c].id, items[c])
-                break
-            case Qt.Key_P:
-                if (c < items.length) root.playSelected()
-                break
-            case Qt.Key_F:
-                if (c < items.length) root.toggleFavorite()
-                break
-            default:
-                return
+    // ---- Category chips -------------------------------------------------------------------
+    Component {
+        id: chipsComp
+        Item {
+            id: chipsRow
+            readonly property bool keys: parent.isCurrent && rows.activeFocus
+            readonly property int at: rows.col(parent.entryIndex)
+            width: parent.width
+            height: root.chipH + 26
+            ListView {
+                id: chipList
+                y: 6
+                width: parent.width
+                height: root.chipH + 12
+                orientation: ListView.Horizontal
+                spacing: Math.round(root.chipH * 0.18)
+                model: root.chips
+                currentIndex: chipsRow.at
+                interactive: false
+                highlightRangeMode: ListView.ApplyRange
+                preferredHighlightBegin: root.side
+                preferredHighlightEnd: width - root.side
+                highlightMoveDuration: 220
+                header: Item { width: root.side; height: 1 }
+                footer: Item { width: root.side; height: 1 }
+                delegate: Rectangle {
+                    id: chip
+                    required property var modelData
+                    required property int index
+                    readonly property bool sel: chipsRow.keys && index === chipsRow.at
+                    width: Math.max(root.chipH * 2.3, chipText.implicitWidth + root.chipH)
+                    height: root.chipH
+                    y: 6
+                    radius: Math.round(root.chipH * 0.2)
+                    color: sel || chipMouse.containsMouse ? "#38FFFFFF" : "#1FFFFFFF"
+                    border.width: sel ? 3 : 1
+                    border.color: sel ? Theme.text : "#26FFFFFF"
+                    scale: sel ? 1.04 : 1
+                    Behavior on scale { NumberAnimation { duration: 140 } }
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: chip.sel ? "#48FFFFFF" : "#2AFFFFFF" }
+                        GradientStop { position: 1.0; color: chip.sel ? "#24FFFFFF" : "#0FFFFFFF" }
+                    }
+                    Text {
+                        id: chipText
+                        anchors.centerIn: parent
+                        width: Math.min(implicitWidth, root.chipH * 4)
+                        text: chip.modelData.label
+                        color: Theme.text
+                        font.pixelSize: Math.round(root.chipH * 0.3)
+                        font.weight: Font.Bold
+                        font.letterSpacing: 1
+                        font.capitalization: Font.AllUppercase
+                        elide: Text.ElideRight
+                    }
+                    MouseArea {
+                        id: chipMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.seeAll(chip.modelData.id)
+                    }
+                }
             }
-            e.accepted = true
         }
+    }
 
-        delegate: Column {
+    // ---- A row of posters ---------------------------------------------------------------
+    Component {
+        id: shelfComp
+        Column {
             id: shelf
-            required property var modelData
-            required property int index
-            property alias cards: cards
-            width: rows.width
-            spacing: Math.round(root.cardHeight * 0.07) + 6   // the selected card grows into this
+            readonly property var data_: parent.entry.shelf
+            readonly property int row: parent.entryIndex
+            readonly property bool keys: parent.isCurrent && rows.activeFocus
+            readonly property int at: rows.col(row)
+            readonly property var current: data_.items[at] || null
+            readonly property var currentInfo: keys ? root.infoOf(current) : null
+            width: parent.width
+            spacing: 10
+            bottomPadding: 14
 
             Row {
-                x: 40
-                spacing: 12
-                height: 30
+                x: root.side
+                spacing: 14
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: shelf.modelData.label
-                    color: rows.currentIndex === shelf.index && rows.activeFocus ? Theme.text : Theme.textSecondary
-                    font.pixelSize: Theme.fontLarge
+                    text: shelf.data_.label
+                    color: shelf.keys ? Theme.text : Theme.textSecondary
+                    font.pixelSize: root.font1 + 1
                     font.weight: Font.DemiBold
                 }
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.baseline: parent.children[0].baseline
                     text: qsTr("See all ›")
                     color: seeAllMouse.containsMouse ? Theme.accent : Theme.textMuted
-                    font.pixelSize: Theme.fontSmall
+                    font.pixelSize: root.font1 - 4
                     MouseArea {
                         id: seeAllMouse
                         anchors.fill: parent
                         anchors.margins: -6
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: root.seeAll(shelf.modelData.id)
+                        onClicked: root.seeAll(shelf.data_.id)
                     }
                 }
             }
@@ -375,82 +634,117 @@ FocusScope {
             ListView {
                 id: cards
                 width: parent.width
-                height: root.cardHeight + 50
+                height: root.cardH
                 orientation: ListView.Horizontal
-                model: shelf.modelData.items.length + 1     // + See all
-                spacing: 14
-                leftMargin: 40
-                rightMargin: 40
-                clip: false
-                interactive: true
-                boundsBehavior: Flickable.StopAtBounds
-                highlightMoveDuration: 200
-                keyNavigationEnabled: false
-                cacheBuffer: root.cardWidth * 4
-                // A wheel over a row scrolls the page, not the row (shift: the row).
-                WheelHandler {
-                    acceptedModifiers: Qt.NoModifier
-                    target: null
-                    onWheel: (ev) => { rows.flick(0, ev.angleDelta.y * 8); ev.accepted = true }
-                }
+                model: shelf.data_.items.length + 1     // + See all
+                spacing: Math.round(root.cardW * 0.06)
+                currentIndex: shelf.at
+                interactive: false
+                // The selected card stays at the left edge; the rest move past it.
+                highlightRangeMode: ListView.StrictlyEnforceRange
+                preferredHighlightBegin: root.side
+                preferredHighlightEnd: root.side + 1
+                highlightMoveDuration: 240
+                highlightMoveVelocity: -1
+                highlightResizeDuration: 0
+                cacheBuffer: root.wideW * 2
 
                 delegate: Item {
                     id: card
                     required property int index
-                    readonly property bool isMore: index === shelf.modelData.items.length
-                    readonly property var item: isMore ? null : shelf.modelData.items[index]
-                    readonly property bool selected: rows.currentIndex === shelf.index && cards.currentIndex === index && rows.activeFocus
-                    readonly property bool hovered: cardMouse.containsMouse
-                    width: root.cardWidth
-                    height: cards.height
-                    z: selected || hovered ? 2 : 0
+                    readonly property bool isMore: index === shelf.data_.items.length
+                    readonly property var item: isMore ? null : shelf.data_.items[index]
+                    readonly property bool sel: shelf.keys && index === shelf.at
+                    readonly property var info: sel ? root.infoOf(item) : null
+                    readonly property bool wide: sel && !isMore
+                    width: wide ? root.wideW : root.cardW
+                    height: root.cardH
+                    Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                    function claim() { if (wide) root.trailerHost = frame; else if (root.trailerHost === frame) root.trailerHost = null }
+                    onWideChanged: claim()
+                    Component.onCompleted: claim()
+                    Component.onDestruction: if (root.trailerHost === frame) root.trailerHost = null
 
                     Rectangle {
                         id: frame
-                        width: parent.width
-                        height: root.cardHeight
+                        anchors.fill: parent
                         radius: 8
-                        color: Theme.raised
-                        clip: true
-                        scale: card.selected || card.hovered ? 1.07 : 1
-                        transformOrigin: Item.Bottom
-                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
-                        border.width: card.selected ? 3 : 0
-                        border.color: Theme.text
+                        color: card.wide && root.trailerShowing && root.trailerHost === frame ? "transparent" : Theme.raised
+                        layer.enabled: card.wide && root.canRound
+                        layer.effect: roundedFx
 
                         Image {
-                            id: posterImage
+                            id: poster
                             anchors.fill: parent
-                            anchors.margins: card.selected ? 3 : 0
                             visible: !card.isMore
                             source: card.item ? card.item.poster || "" : ""
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
-                            sourceSize.width: 380   // fixed: a window resize doesn't reload every poster
+                            sourceSize.width: 380   // fixed: a resize doesn't reload every poster
+                            opacity: card.wide && backdrop.status === Image.Ready ? 0 : 1
+                            Behavior on opacity { NumberAnimation { duration: 250 } }
                         }
-                        // No picture: the title on a quiet card.
-                        Text {
-                            visible: !card.isMore && posterImage.status !== Image.Ready
+                        // Widened: the title's backdrop (16:9), then its trailer.
+                        Image {
+                            id: backdrop
+                            anchors.fill: parent
+                            source: card.wide && card.info && card.info.backdrop ? card.info.backdrop : ""
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                            sourceSize.width: 960
+                            opacity: status === Image.Ready && !(root.trailerShowing && root.trailerHost === frame) ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: 300 } }
+                        }
+                        Text {   // no picture
+                            visible: !card.isMore && poster.status !== Image.Ready && backdrop.status !== Image.Ready
                             anchors.fill: parent
                             anchors.margins: 12
                             text: card.item ? card.item.title : ""
                             color: Theme.textSecondary
-                            font.pixelSize: Theme.fontBody - 1
+                            font.pixelSize: root.font1 - 2
                             font.weight: Font.DemiBold
                             wrapMode: Text.Wrap
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             elide: Text.ElideRight
                         }
-                        // Watched part (Continue watching and anything started).
+                        // Widened: the title (logo where TMDB has one) and badges over the picture.
+                        Rectangle {
+                            visible: card.wide
+                            anchors.bottom: parent.bottom
+                            width: parent.width
+                            height: parent.height * 0.5
+                            gradient: Gradient {
+                                GradientStop { position: 0.0; color: "transparent" }
+                                GradientStop { position: 1.0; color: "#B0000000" }
+                            }
+                        }
+                        TitleArt {
+                            visible: card.wide
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            anchors.margins: Math.round(root.cardH * 0.06)
+                            item: card.item
+                            info: card.info
+                            maxWidth: root.wideW * 0.42
+                            maxHeight: root.cardH * 0.26
+                            fontSize: Math.round(root.cardH * 0.1)
+                        }
+                        Badges {
+                            visible: card.wide
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.margins: Math.round(root.cardH * 0.06)
+                            list: root.badges(card.item, card.info).slice(0, 2)
+                            fontSize: root.font1 - 5
+                        }
+                        // Watched part.
                         Rectangle {
                             visible: !card.isMore && card.item && card.item.progress > 0
                             anchors.bottom: parent.bottom
-                            anchors.bottomMargin: card.selected ? 3 : 0
-                            x: card.selected ? 3 : 0
-                            width: parent.width - 2 * x
-                            height: 4
-                            color: "#80000000"
+                            width: parent.width
+                            height: 5
+                            color: "#99000000"
                             Rectangle { width: parent.width * (card.item ? Math.max(0, card.item.progress) : 0); height: parent.height; color: Theme.accent }
                         }
                         Rectangle {   // watched
@@ -467,49 +761,79 @@ FocusScope {
                             visible: card.isMore
                             anchors.centerIn: parent
                             spacing: 6
-                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("See all"); color: Theme.text; font.pixelSize: Theme.fontLarge; font.weight: Font.DemiBold }
-                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: Number(shelf.modelData.count).toLocaleString(Qt.locale(), "f", 0); color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
+                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("See all"); color: Theme.text; font.pixelSize: root.font1 + 2; font.weight: Font.DemiBold }
+                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: Number(shelf.data_.count).toLocaleString(Qt.locale(), "f", 0); color: Theme.textMuted; font.pixelSize: root.font1 - 4 }
                         }
                     }
-                    Text {
-                        anchors.top: frame.bottom
-                        anchors.topMargin: card.selected || card.hovered ? 14 : 10
-                        width: parent.width
-                        visible: !card.isMore
-                        text: card.item ? (card.item.subtitle || card.item.title) : ""
-                        color: card.selected ? Theme.text : Theme.textSecondary
-                        font.pixelSize: Theme.fontSmall + 1
-                        elide: Text.ElideRight
+                    // The selected card's outline.
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: -3
+                        radius: 11
+                        color: "transparent"
+                        border.width: 3
+                        border.color: Theme.text
+                        visible: card.sel || cardMouse.containsMouse
+                        opacity: card.sel ? 1 : 0.5
                     }
                     MouseArea {
                         id: cardMouse
-                        anchors.fill: frame
+                        anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        // Resting on a card puts it in the spotlight.
-                        onContainsMouseChanged: if (containsMouse && card.item) hoverTimer.restart()
-                        Timer { id: hoverTimer; interval: 250; onTriggered: if (cardMouse.containsMouse) root.select(card.item) }
                         onClicked: {
                             rows.forceActiveFocus()
-                            rows.selectAt(shelf.index, card.index)
-                            if (card.isMore) root.seeAll(shelf.modelData.id)
+                            rows.currentIndex = shelf.row
+                            rows.setCol(shelf.row, card.index)
+                            root.syncSelection()
+                            if (card.isMore) root.seeAll(shelf.data_.id)
                             else root.openDetails(card.item.kind, card.item.id, card.item)
                         }
                     }
                 }
             }
-        }
 
-        // Nothing to show (still loading, or an empty catalogue).
-        Text {
-            anchors.centerIn: parent
-            visible: rows.count === 0
-            width: parent.width - 80
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.Wrap
-            text: Vod.loading ? qsTr("Loading…") : Vod.error || qsTr("No titles yet")
-            color: Theme.textMuted
-            font.pixelSize: Theme.fontBody
+            // What the selected title is, under the row.
+            Item {
+                width: parent.width
+                height: shelf.keys && shelf.current ? infoCol.implicitHeight + 6 : 0
+                clip: true
+                Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                Column {
+                    id: infoCol
+                    x: root.side
+                    y: 4
+                    width: Math.min(root.wideW * 1.3, parent.width - 2 * root.side)
+                    spacing: 4
+                    Text {   // an episode in progress
+                        width: parent.width
+                        visible: !!(shelf.current && shelf.current.subtitle)
+                        text: shelf.current ? shelf.current.subtitle || "" : ""
+                        color: Theme.textSecondary
+                        font.pixelSize: root.font1 - 2
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        width: parent.width
+                        text: shelf.current && shelf.current.progress > 0 ? qsTr("Resume") : root.metaLine(shelf.current, shelf.currentInfo)
+                        color: Theme.text
+                        font.pixelSize: root.font1 - 1
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        width: parent.width
+                        visible: text.length > 0 && !(shelf.current && shelf.current.progress > 0)
+                        text: shelf.currentInfo ? shelf.currentInfo.plot || "" : ""
+                        color: Theme.textSecondary
+                        font.pixelSize: root.font1 - 1
+                        lineHeight: 1.15
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                    }
+                }
+            }
         }
     }
 }

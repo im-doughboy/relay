@@ -130,18 +130,26 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   refreshed once a day, or from Settings → **Update movies**. Other M3U playlists show the
   movie and episode entries they contain, with episodes grouped into series by their
   "S01 E02" names.
-- It opens like a streaming service: a **spotlight** on the selected title (backdrop, year,
-  length, rating, genres, plot) and **rows** under it: Continue watching, Favorites, Recently
-  added, Top rated, then each of your provider's categories. Move with the arrows (or a remote,
-  controller or the phone), **Enter** opens the title, **P** plays it, **F** adds a favorite,
-  and **Up** from the first row reaches the spotlight's buttons. Each row ends with **See all**,
-  the full grid of that category, where **O** changes the order (default, recently added, A–Z,
-  top rated, newest). Typing searches; **Tab** switches between Movies and Series.
-- **Trailers:** after a moment on a title, its trailer plays quietly behind the spotlight (the
-  speaker button turns the sound on; Settings turns this off). The title's page has **Trailer**
-  to watch it full size. Trailers come from your provider (Xtream servers often list one) or
-  TMDB, and YouTube ones play through [yt-dlp](https://github.com/yt-dlp/yt-dlp), which the
-  Windows download includes and keeps up to date; without it they open in the browser.
+- It opens like a streaming service. Tabs at the top (**Search · Movies · Series · Recordings**;
+  **Up** from the top of the page reaches them), then a **spotlight** card with a featured
+  title, its trailer playing in the card, **Play** and **More info**. Under it, your provider's
+  **categories** as a row of chips, then **rows**: Continue watching, Favorites, Recently added,
+  Top rated and each category. The row you're on rises to the top and its selected poster
+  widens into the title's picture, where its trailer starts after a moment; what it is shows
+  under the row. **Enter** opens the title, **P** plays it, **F** adds a favorite, **M** turns
+  the trailer's sound on. Each row ends with **See all**, the full grid of that category, where
+  **O** changes the order (default, recently added, A–Z, top rated, newest). Typing searches;
+  **Tab** (or LB / RB) switches between Movies, Series and Recordings.
+- **A title's page:** its logo (from TMDB, when there's one) or name, year, genre, length, age
+  rating, plot and cast on the left, and a list of what you can do: Play / Resume, Play from the
+  beginning, **Episodes** (a series' seasons and episodes on their own page), the trailer, add
+  to favorites, mark as watched, watch in multi-view, and **Credits & more info**. The trailer
+  plays behind the page (muted, **M** for sound); left alone, the text steps back so you can
+  watch it, and any key brings it back.
+- **Trailers:** from your provider (Xtream servers often list one) or TMDB; YouTube ones play
+  through [yt-dlp](https://github.com/yt-dlp/yt-dlp), which the Windows download includes and
+  keeps up to date; without it they open in the browser. Settings → Movies & series turns
+  trailers that start by themselves off.
 - **Continue watching** keeps your place in movies and episodes. A movie counts as watched at
   90 %, and finishing an episode queues the next one. Delete removes an item from the list.
 - Playback: **← →** seek 10 s (Shift: 1 min), **↑ ↓** 1 min, Page Up/Down 10 min, Space pause,

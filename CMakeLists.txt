@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Relay VERSION 0.3.2 LANGUAGES CXX)
+project(Relay VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -160,6 +160,10 @@ set(RELAY_QML_FILES
     qml/RelayMenu.qml
     qml/RelayMenuItem.qml
     qml/VodHome.qml
+    qml/PillButton.qml
+    qml/TitleArt.qml
+    qml/Badges.qml
+    qml/VodCredits.qml
     qml/HiddenManager.qml
     qml/Search.qml
     qml/RenameDialog.qml
@@ -198,10 +202,14 @@ foreach(f ${RELAY_QML_FILES})
     set_source_files_properties(${f} PROPERTIES QT_RESOURCE_ALIAS ${name})
 endforeach()
 
+# Loaded by address at run time (it needs QtQuick.Effects, Qt 6.5+): a
+# resource, not compiled, so older Qt still builds.
+set_source_files_properties(qml/RoundedEffect.qml PROPERTIES QT_RESOURCE_ALIAS RoundedEffect.qml)
 qt_add_qml_module(relay
     URI Relay
     VERSION 1.0
     QML_FILES ${RELAY_QML_FILES}
+    RESOURCES qml/RoundedEffect.qml
 )
 
 target_link_libraries(relay PRIVATE relay_core Qt6::QuickControls2)

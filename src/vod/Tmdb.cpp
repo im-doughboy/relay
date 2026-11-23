@@ -18,6 +18,55 @@
 
 // The YouTube trailer among TMDB's videos: an official trailer first, then
 // any trailer, then a teaser.
+// The title's logo (a transparent PNG of its name, as on the poster): in the
+// viewer's language, else English, else one without words; the best voted.
+QString TmdbClient::logoPath(const QJsonArray &logos)
+{
+    const QString lang = languageCode();
+    QString best;
+    int bestRank = -1;
+    double bestVotes = -1;
+    for (const QJsonValue &v : logos) {
+        const QJsonObject l = v.toObject();
+        const QString path = l.value(QLatin1String("file_path")).toString();
+        if (!path.endsWith(QLatin1String(".png"), Qt::CaseInsensitive)) continue;   // SVGs need more than Qt has here
+        const QString iso = l.value(QLatin1String("iso_639_1")).toString();
+        const int rank = iso == lang ? 3 : iso == QLatin1String("en") ? 2 : iso.isEmpty() ? 1 : 0;
+        if (rank == 0) continue;
+        const double votes = l.value(QLatin1String("vote_average")).toDouble();
+        if (rank > bestRank || (rank == bestRank && votes > bestVotes)) { best = path; bestRank = rank; bestVotes = votes; }
+    }
+    return best;
+}
+
+// The age rating where the viewer is (else the US one): PG-13, TV-MA, 12…
+QString TmdbClient::certification(const QJsonObject &o, bool tv)
+{
+    const QString here = QLocale::territoryToCode(QLocale::system().territory());
+    QString found, us;
+    if (tv) {
+        for (const QJsonValue &v : o.value(QLatin1String("content_ratings")).toObject().value(QLatin1String("results")).toArray()) {
+            const QJsonObject r = v.toObject();
+            const QString c = r.value(QLatin1String("iso_3166_1")).toString(), rating = r.value(QLatin1String("rating")).toString();
+            if (rating.isEmpty()) continue;
+            if (c == here) found = rating;
+            if (c == QLatin1String("US")) us = rating;
+        }
+    } else {
+        for (const QJsonValue &v : o.value(QLatin1String("release_dates")).toObject().value(QLatin1String("results")).toArray()) {
+            const QJsonObject r = v.toObject();
+            const QString c = r.value(QLatin1String("iso_3166_1")).toString();
+            for (const QJsonValue &d : r.value(QLatin1String("release_dates")).toArray()) {
+                const QString rating = d.toObject().value(QLatin1String("certification")).toString().trimmed();
+                if (rating.isEmpty()) continue;
+                if (c == here && found.isEmpty()) found = rating;
+                if (c == QLatin1String("US") && us.isEmpty()) us = rating;
+            }
+        }
+    }
+    return found.isEmpty() ? us : found;
+}
+
 QString TmdbClient::trailerKey(const QJsonArray &videos)
 {
     int best = -1;
@@ -344,6 +393,17 @@ void TmdbClient::details(const QString &kind, const QString &title, const QStrin
                 const QJsonArray runs = o.value(QLatin1String("episode_run_time")).toArray();
                 if (!runs.isEmpty()) minutes = runs.first().toInt();
             }
+            // Writers (Writing department), the age rating, and the title's logo.
+            QStringList writers;
+            for (const QJsonValue &c : credits.value(QLatin1String("crew")).toArray())
+                if (c.toObject().value(QLatin1String("department")).toString() == QLatin1String("Writing"))
+                    writers << c.toObject().value(QLatin1String("name")).toString();
+            writers.removeDuplicates();
+            if (!writers.isEmpty()) st->out.insert(QStringLiteral("writer"), writers.mid(0, 4).join(QStringLiteral(", ")));
+            const QString cert = certification(o, tv);
+            if (!cert.isEmpty()) st->out.insert(QStringLiteral("certification"), cert);
+            const QString logo = logoPath(o.value(QLatin1String("images")).toObject().value(QLatin1String("logos")).toArray());
+            if (!logo.isEmpty()) st->out.insert(QStringLiteral("logo"), imageBase() + QStringLiteral("w500") + logo);
             if (minutes > 0)
                 st->out.insert(QStringLiteral("duration"), minutes >= 60 ? QStringLiteral("%1 h %2 min").arg(minutes / 60).arg(minutes % 60)
                                                                          : QStringLiteral("%1 min").arg(minutes));
@@ -364,8 +424,10 @@ void TmdbClient::details(const QString &kind, const QString &title, const QStrin
 
         st->left = 1 + (tv ? int(seasons.size()) : 0);
         QUrlQuery withCredits;
-        withCredits.addQueryItem(QStringLiteral("append_to_response"), QStringLiteral("credits,videos"));
-        fetch(QStringLiteral("%1|%2").arg(type).arg(id), QStringLiteral("/%1/%2").arg(type).arg(id), withCredits, applyFull);
+        withCredits.addQueryItem(QStringLiteral("append_to_response"),
+                                 tv ? QStringLiteral("credits,videos,images,content_ratings") : QStringLiteral("credits,videos,images,release_dates"));
+        withCredits.addQueryItem(QStringLiteral("include_image_language"), languageCode() + QStringLiteral(",en,null"));
+        fetch(QStringLiteral("%1|%2|2").arg(type).arg(id), QStringLiteral("/%1/%2").arg(type).arg(id), withCredits, applyFull);
         if (!tv) return;
         for (int season : seasons) {
             fetch(QStringLiteral("season|%1|%2").arg(id).arg(season), QStringLiteral("/tv/%1/season/%2").arg(id).arg(season), {},

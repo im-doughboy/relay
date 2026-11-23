@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QLocale>
 #include <QObject>
 #include <QPointer>
 #include <QStringList>
@@ -29,6 +30,10 @@ class TmdbClient : public QObject
 
 public:
     static QString trailerKey(const QJsonArray &videos);
+    static QString logoPath(const QJsonArray &logos);
+    static QString certification(const QJsonObject &details, bool tv);
+    // "en" from QLocale (the viewer's language, two letters).
+    static QString languageCode() { const QString n = QLocale().name().left(2); return n == QLatin1String("C") || n.isEmpty() ? QStringLiteral("en") : n; }
     TmdbClient(const QString &cacheDir, QObject *parent = nullptr);
     ~TmdbClient() override;
 
