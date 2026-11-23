@@ -3,6 +3,18 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.2.4
+
+- **Casting to Samsung TVs:** many providers send channels as HLS (a playlist of short pieces),
+  which Samsung TVs don't play. Relay now joins the pieces into one continuous stream the TV
+  does play. It asks each TV what it plays and picks the way that works, including a second try
+  if the TV refuses the first.
+- **Cast and multi-view on movies and episodes:** the same icons as on live TV, next to Audio
+  and Subtitles (T and Q work too). Multi-view keeps your place in the movie and opens live
+  channels in tiles.
+- **Smaller windows:** the movie controls no longer overlap (the play buttons move next to the
+  time), and the Recordings tab is no longer hidden behind the order button.
+
 ## 0.2.3
 
 - **Casting to Samsung and other smart TVs:** Relay now asks the TV which kinds of video it

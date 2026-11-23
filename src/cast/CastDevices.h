@@ -99,6 +99,9 @@ public:
     static QString features(bool live);
     // From the TV's Sink list ("http-get:*:video/mpeg:*,..."): what it calls `mime`.
     static QString pickType(const QString &sink, const QString &mime);
+    QString sink() const { return m_sink; }
+    // The TV lists this type (under any of its names).
+    bool plays(const QString &mime) const { return !m_sink.isEmpty() && m_sink.contains(QLatin1Char(':') + pickType(m_sink, mime) + QLatin1Char(':')); }
 
 signals:
     void playing();

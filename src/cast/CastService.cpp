@@ -101,6 +101,9 @@ void CastService::begin(const QString &url, const QVariantMap &source)
 {
     if (!m_path.isEmpty()) m_relay->remove(m_path);
     m_path.clear();
+    m_castUrl = url;
+    m_castSource = source;
+    m_triedHls = false;
     const bool chromecast = m_device.kind == QLatin1String("chromecast");
     const QString mime = mimeFor(url, m_live);
     if (chromecast) { serve(url, source, mime); return; }
@@ -108,29 +111,57 @@ void CastService::begin(const QString &url, const QVariantMap &source)
     if (!m_dlna) {
         m_dlna = new DlnaRenderer(m_device, this);
         connect(m_dlna, &DlnaRenderer::playing, this, [this] { setState(QStringLiteral("playing")); });
-        connect(m_dlna, &DlnaRenderer::failed, this, [this](const QString &problem) { finish(problem); });
+        connect(m_dlna, &DlnaRenderer::failed, this, [this](const QString &problem) {
+            // A TV that won't take a live channel as it comes may take it as HLS.
+            const bool liveTs = m_live && mimeFor(m_castUrl, true) == QLatin1String("video/mp2t");
+            const bool tvTakesHls = m_dlna && (m_dlna->sink().isEmpty() || m_dlna->plays(QStringLiteral("application/vnd.apple.mpegurl")));
+            if (!m_triedHls && liveTs && tvTakesHls && m_state == QLatin1String("connecting")) { retryAsHls(); return; }
+            finish(problem);
+        });
         connect(m_dlna, &DlnaRenderer::stopped, this, [this] { finish(QString()); });
     }
     // The name this TV uses for the type (Samsung is particular about it).
     const quint64 generation = m_generation;
-    m_dlna->acceptedType(mime, [this, url, source, generation](const QString &type) {
+    m_dlna->acceptedType(mime, [this, url, source, mime, generation](const QString &type) {
         if (generation != m_generation || !m_dlna) return;   // stopped or moved on meanwhile
+        // An HLS channel for a TV that doesn't list HLS (Samsung): one MPEG-TS stream instead.
+        if (mime == QLatin1String("application/x-mpegurl") && m_live && !m_dlna->plays(QStringLiteral("application/vnd.apple.mpegurl"))) {
+            const QString ts = DlnaRenderer::pickType(m_dlna->sink(), QStringLiteral("video/mp2t"));
+            qInfo().noquote() << "Cast: the TV doesn't list HLS; sending the channel as" << ts;
+            m_triedHls = true;   // nothing to fall back to
+            serve(url, source, ts, false, true);
+            return;
+        }
         serve(url, source, type);
     });
 }
 
-void CastService::serve(const QString &url, const QVariantMap &source, const QString &mime)
+void CastService::retryAsHls()
+{
+    m_triedHls = true;
+    qInfo().noquote() << "Cast: the TV didn't play the stream as it comes; trying it as HLS";
+    if (!m_path.isEmpty()) m_relay->remove(m_path);
+    m_path.clear();
+    const quint64 generation = m_generation;
+    m_dlna->acceptedType(QStringLiteral("application/vnd.apple.mpegurl"), [this, generation](const QString &type) {
+        if (generation != m_generation || !m_dlna) return;
+        serve(m_castUrl, m_castSource, type, true);
+    });
+}
+
+void CastService::serve(const QString &url, const QVariantMap &source, const QString &mime, bool makeHls, bool joinHls)
 {
     const bool chromecast = m_device.kind == QLatin1String("chromecast");
-    const bool hlsSource = mime == QLatin1String("application/x-mpegurl");
+    const bool hlsSource = !makeHls && !joinHls && mime == QLatin1String("application/x-mpegurl");
 
     CastRelay::Source rs;
     rs.url = url;
     rs.userAgent = source.value(QStringLiteral("userAgent")).toString();
     rs.referrer = source.value(QStringLiteral("referrer")).toString();
     // Chromecast plays HLS, not a raw TS stream: live TS goes out as HLS.
-    rs.asHls = chromecast && m_live && !hlsSource && mime == QLatin1String("video/mp2t");
+    rs.asHls = makeHls || (chromecast && m_live && !hlsSource && mime == QLatin1String("video/mp2t"));
     rs.contentType = mime;
+    rs.joinHls = joinHls;
     if (!chromecast) {
         rs.forceType = !hlsSource;   // the same type the TV was told
         rs.dlnaFeatures = DlnaRenderer::features(m_live);

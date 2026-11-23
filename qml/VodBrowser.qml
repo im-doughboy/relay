@@ -175,10 +175,15 @@ FocusScope {
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 10
+            // Room between the tabs and ✕ (a narrow window: the search box
+            // shrinks, then the order button shows only ⇅).
+            readonly property real room: closeButton.x - 12 - (tabs.x + tabs.width + 20)
+            readonly property bool compactSort: room - (sortFull.width + 32) - spacing < 160
+            TextMetrics { id: sortFull; font: sortText.font; text: "⇅  " + Vod.sortNames[Vod.sort] }
 
             Rectangle {   // order
                 height: 44
-                width: sortText.implicitWidth + 32
+                width: headerRight.compactSort ? 44 : sortFull.width + 32
                 radius: Theme.radius
                 color: sortMouse.containsMouse ? Theme.focus : Theme.raised
                 border.width: 1
@@ -186,7 +191,7 @@ FocusScope {
                 Text {
                     id: sortText
                     anchors.centerIn: parent
-                    text: "⇅  " + Vod.sortNames[Vod.sort]
+                    text: headerRight.compactSort ? "⇅" : "⇅  " + Vod.sortNames[Vod.sort]
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSmall + 1
                 }
@@ -210,7 +215,8 @@ FocusScope {
 
             TextField {
                 id: searchField
-                width: Math.min(360, root.width * 0.28)
+                width: Math.max(120, Math.min(360, root.width * 0.28,
+                                              headerRight.room - (headerRight.compactSort ? 44 : sortFull.width + 32) - headerRight.spacing))
                 height: 44
                 placeholderText: Vod.section === 0 ? qsTr("Search movies") : qsTr("Search series")
                 placeholderTextColor: Theme.textMuted

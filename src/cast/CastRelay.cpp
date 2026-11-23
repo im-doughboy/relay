@@ -1,4 +1,5 @@
 #include "CastRelay.h"
+#include "HlsJoiner.h"
 
 #include "TsSegmenter.h"
 
@@ -46,7 +47,7 @@ QByteArray commonHeaders(const QHash<QByteArray, QByteArray> &request, const QSt
                    "Access-Control-Allow-Headers: *\r\n"
                    "Access-Control-Expose-Headers: Content-Length, Content-Range\r\n"
                    "Server: Relay\r\n";
-    if (request.contains("getcontentfeatures.dlna.org"))
+    if (request.contains("getcontentfeatures.dlna.org") || !features.isEmpty())   // a TV's stream: always
         h += "transferMode.dlna.org: Streaming\r\n"
              "contentFeatures.dlna.org: "
              + (features.isEmpty() ? QByteArray("DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
@@ -99,7 +100,14 @@ QString CastRelay::add(const Source &source)
         startFeed(token);
         return QStringLiteral("/h/%1/live.m3u8").arg(token);
     }
-    return QStringLiteral("/s/%1/stream").arg(token);
+    // Some TVs (Samsung) go by how the address ends.
+    const QString type = source.contentType;
+    const QString ext = type.contains(QLatin1String("mp4")) ? QStringLiteral(".mp4")
+                      : type.contains(QLatin1String("mkv")) || type.contains(QLatin1String("matroska")) ? QStringLiteral(".mkv")
+                      : type.contains(QLatin1String("msvideo")) || type.contains(QLatin1String("avi")) ? QStringLiteral(".avi")
+                      : type.contains(QLatin1String("mpegurl")) ? QStringLiteral(".m3u8")
+                      : QStringLiteral(".ts");
+    return QStringLiteral("/s/%1/stream%2").arg(token, ext);
 }
 
 void CastRelay::remove(const QString &path)
@@ -189,11 +197,12 @@ void CastRelay::onConnection()
     }
 }
 
-void CastRelay::reply(QTcpSocket *socket, int status, const QByteArray &type, const QByteArray &body, const QByteArray &method)
+void CastRelay::reply(QTcpSocket *socket, int status, const QByteArray &type, const QByteArray &body, const QByteArray &method,
+                      const QString &features)
 {
     if (!socket) return;
     QByteArray h = "HTTP/1.1 " + QByteArray::number(status) + ' ' + statusText(status) + "\r\n";
-    h += commonHeaders({});
+    h += commonHeaders({}, features);
     if (!type.isEmpty()) h += "Content-Type: " + type + "\r\n";
     h += "Content-Length: " + QByteArray::number(body.size()) + "\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
     socket->write(h);
@@ -229,7 +238,12 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
     if (parts[0] == QLatin1String("h")) {                       // HLS made here
         if (parts[2] == QLatin1String("live.m3u8")) {
             const QByteArray list = e.segmenter->playlist(QString(), 2);
-            if (!list.isEmpty()) { reply(socket, 200, "application/vnd.apple.mpegurl", list, method); return; }
+            if (!list.isEmpty()) {
+                const QByteArray type = e.source.forceType && !e.source.contentType.isEmpty() ? e.source.contentType.toUtf8()
+                                                                                           : QByteArray("application/vnd.apple.mpegurl");
+                reply(socket, 200, type, list, method, e.source.dlnaFeatures);
+                return;
+            }
             m_waiting.append({socket, token, QDateTime::currentMSecsSinceEpoch()});
             m_waitTimer.start();
             return;
@@ -240,7 +254,8 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
         return;
     }
     if (parts[0] == QLatin1String("s")) {                       // the stream itself
-        pipe(socket, token, e.source.url, method, headers);
+        if (e.source.joinHls) serveJoined(socket, e.source, method, headers);
+        else pipe(socket, token, e.source.url, method, headers);
         return;
     }
     if (parts[0] == QLatin1String("u")) {                       // a part of an HLS playlist
@@ -329,10 +344,28 @@ void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &ur
             reply(sock, 502, "text/plain", "provider error");
             return;
         }
+        if (method == "HEAD") return;   // answered and closed already
         // Whatever's left, then close once it has gone out.
         sock->write(up->readAll());
         sock->disconnectFromHost();
     });
+}
+
+// ---- live HLS -> one MPEG-TS stream (TVs that don't play HLS) ------------------------------------
+
+void CastRelay::serveJoined(QTcpSocket *socket, const Source &source, const QByteArray &method,
+                            const QHash<QByteArray, QByteArray> &headers)
+{
+    // A live stream: no length, no ranges.
+    QByteArray h = "HTTP/1.1 200 OK\r\n";
+    h += commonHeaders(headers, source.dlnaFeatures);
+    h += "Content-Type: " + (source.contentType.isEmpty() ? QByteArray("video/mp2t") : source.contentType.toUtf8()) + "\r\n";
+    h += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    socket->write(h);
+    if (method == "HEAD") { socket->disconnectFromHost(); return; }
+    qInfo().noquote() << "Cast: passing the channel's HLS on as one MPEG-TS stream";
+    auto *joiner = new HlsJoiner(m_net, QUrl(source.url), source.userAgent, source.referrer, socket, this);
+    joiner->start();
 }
 
 // ---- live MPEG-TS -> HLS -----------------------------------------------------------------------
@@ -375,7 +408,11 @@ void CastRelay::answerWaiting()
         if (!w.socket) { m_waiting.removeAt(i); continue; }
         const auto it = m_entries.constFind(w.token);
         const QByteArray list = it != m_entries.constEnd() ? it->segmenter->playlist(QString(), 2) : QByteArray();
-        if (!list.isEmpty()) reply(w.socket, 200, "application/vnd.apple.mpegurl", list);
+        if (!list.isEmpty()) {
+            const Source &src = it->source;
+            reply(w.socket, 200, src.forceType && !src.contentType.isEmpty() ? src.contentType.toUtf8() : QByteArray("application/vnd.apple.mpegurl"),
+                  list, "GET", src.dlnaFeatures);
+        }
         else if (it == m_entries.constEnd() || now - w.since > kWaitForSegmentsMs) reply(w.socket, 503, "text/plain", "not ready");
         else continue;
         m_waiting.removeAt(i);

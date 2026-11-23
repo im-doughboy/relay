@@ -1,6 +1,6 @@
 #include "CastDevices.h"
 
-#include <QSet>
+#include <QHash>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -351,15 +351,19 @@ QString DlnaRenderer::pickType(const QString &sink, const QString &mime)
                                               QStringLiteral("video/mkv")}},
         {QStringLiteral("video/mp4"), {QStringLiteral("video/mp4"), QStringLiteral("video/mpeg4")}},
         {QStringLiteral("video/x-msvideo"), {QStringLiteral("video/x-msvideo"), QStringLiteral("video/avi")}},
+        {QStringLiteral("application/vnd.apple.mpegurl"), {QStringLiteral("application/vnd.apple.mpegurl"),
+                                                           QStringLiteral("application/x-mpegurl"), QStringLiteral("audio/mpegurl"),
+                                                           QStringLiteral("audio/x-mpegurl")}},
     };
-    QSet<QString> offered;
+    QHash<QString, QString> offered;   // lower case -> as the TV wrote it
     for (const QString &entry : sink.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
         const QStringList f = entry.trimmed().split(QLatin1Char(':'));
-        if (f.size() >= 3 && f[0].compare(QLatin1String("http-get"), Qt::CaseInsensitive) == 0) offered.insert(f[2].toLower());
+        if (f.size() >= 3 && f[0].compare(QLatin1String("http-get"), Qt::CaseInsensitive) == 0 && !offered.contains(f[2].toLower()))
+            offered.insert(f[2].toLower(), f[2]);
     }
     if (offered.isEmpty()) return mime;
     for (const QString &name : aliases.value(mime, {mime}))
-        if (offered.contains(name)) return name;
+        if (offered.contains(name)) return offered.value(name);
     return mime;
 }
 

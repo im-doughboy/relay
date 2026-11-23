@@ -132,6 +132,17 @@ Window {
                                { title: d.kind === "episode" ? d.seriesTitle : d.title,
                                  poster: d.kind === "episode" ? d.seriesPoster : d.poster })
     }
+    // Multi-view from a movie or episode: it keeps its place (Continue
+    // watching), and live channels open in tiles.
+    function multiViewFromVod() {
+        if (!Player.vodActive) { openMultiView(); return }
+        const kind = Player.vod.kind
+        if (kind === "movie" || kind === "episode") saveVodProgress()
+        win.playbackError = ""
+        Player.stopVod()
+        vodBrowser.close(); recordings.close()
+        openMultiView()
+    }
     // Catch-up of the show on now, from its beginning.
     function watchFromStart() {
         let p = Player.nowProgram
@@ -556,6 +567,9 @@ Window {
                 castPicker.open(); ev.accepted = true; return
             }
             if (Player.vodActive) {
+                if (ev.key === Keymap.keyOf("multiview") && !(ev.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+                    win.multiViewFromVod(); ev.accepted = true; return
+                }
                 if (ev.key === Keymap.keyOf("external") && !(ev.modifiers & Qt.ControlModifier)) { Player.openExternally(); ev.accepted = true; return }
                 vodKey(ev)
                 return
@@ -708,6 +722,9 @@ Window {
         onLiveRequested: win.leaveVod()
         onBackRequested: win.leaveVod()
         onOptionsRequested: win.openPlayerOptions()
+        onCastRequested: castPicker.open()
+        // Multi-view is live channels: the movie keeps its place, and live TV opens in tiles.
+        onMultiViewRequested: win.multiViewFromVod()
     }
 
     // Live TV's player controls (bottom; appear with the mouse or after a skip).

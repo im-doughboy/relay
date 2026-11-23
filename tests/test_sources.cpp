@@ -16,6 +16,7 @@
 #include "app/Updater.h"
 #include "cast/CastDevices.h"
 #include "cast/CastRelay.h"
+#include "cast/HlsJoiner.h"
 #include "cast/CastService.h"
 #include "cast/TsSegmenter.h"
 #include "vod/VodParser.h"
@@ -1795,6 +1796,9 @@ private slots:
         QCOMPARE(DlnaRenderer::pickType("http-get:*:video/mpeg:*,http-get:*:video/mp2t:*", "video/mp2t"), QString("video/mp2t"));
         QCOMPARE(DlnaRenderer::pickType("", "video/mp2t"), QString("video/mp2t"));
         QCOMPARE(DlnaRenderer::pickType("http-get:*:audio/mpeg:*", "video/mp2t"), QString("video/mp2t"));
+        // HLS (the second try for a live channel), under the TV's name for it.
+        QCOMPARE(DlnaRenderer::pickType("http-get:*:application/x-mpegURL:*", "application/vnd.apple.mpegurl"),
+                 QString("application/x-mpegURL"));
 
         // Asking ConnectionManager takes no InstanceID; AVTransport does.
         const QByteArray ask = DlnaRenderer::soapBody("GetProtocolInfo", QString(), "urn:schemas-upnp-org:service:ConnectionManager:1");
@@ -1806,6 +1810,77 @@ private slots:
                     .contains("http-get:*:video/vnd.dlna.mpeg-tts:" + DlnaRenderer::features(true).toUtf8()));
         QVERIFY(DlnaRenderer::features(true).startsWith("DLNA.ORG_OP=00"));
         QVERIFY(DlnaRenderer::features(false).startsWith("DLNA.ORG_OP=01"));
+    }
+
+    // A Samsung TV plays MPEG-TS but not HLS: an HLS channel goes to it as one
+    // continuous TS stream made of the channel's segments.
+    void cast_hls_to_ts()
+    {
+        const QUrl base("http://p/live/ch/index.m3u8");
+        auto master = HlsJoiner::parse("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/i.m3u8\n"
+                                       "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nhigh/i.m3u8\n", base);
+        QVERIFY(master.master);
+        QCOMPARE(HlsJoiner::pickVariant(master), QUrl("http://p/live/ch/high/i.m3u8"));
+        auto media = HlsJoiner::parse("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:120\n"
+                                      "#EXTINF:4.0,\n120.ts\n#EXTINF:4.0,\n/abs/121.ts\n", base);
+        QVERIFY(!media.master);
+        QCOMPARE(media.sequence, 120);
+        QCOMPARE(media.targetDuration, 4.0);
+        QCOMPARE(media.segments, (QList<QUrl>{QUrl("http://p/live/ch/120.ts"), QUrl("http://p/abs/121.ts")}));
+        QVERIFY(HlsJoiner::parse("#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n1.ts\n", base).encrypted);
+        QVERIFY(!HlsJoiner::parse("#EXT-X-KEY:METHOD=NONE\n1.ts\n", base).encrypted);
+        QVERIFY(HlsJoiner::parse("#EXT-X-MAP:URI=\"init.mp4\"\n1.m4s\n", base).fmp4);
+
+        // The whole way: master -> media playlist -> the last 3 segments, in order.
+        QTcpServer provider;
+        QVERIFY(provider.listen(QHostAddress::LocalHost));
+        QStringList asked;
+        connect(&provider, &QTcpServer::newConnection, this, [&] {
+            QTcpSocket *s = provider.nextPendingConnection();
+            auto buf = std::make_shared<QByteArray>();
+            connect(s, &QTcpSocket::readyRead, s, [s, buf, &asked] {
+                *buf += s->readAll();
+                if (!buf->contains("\r\n\r\n")) return;
+                const QByteArray path = buf->split(' ').value(1);
+                asked << QString::fromLatin1(path);
+                QByteArray body, type = "application/vnd.apple.mpegurl";
+                if (path == "/live/ch.m3u8") body = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhd.m3u8\n";
+                else if (path == "/live/hd.m3u8")
+                    body = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:7\n"
+                           "#EXTINF:2,\ns7.ts\n#EXTINF:2,\ns8.ts\n#EXTINF:2,\ns9.ts\n#EXTINF:2,\ns10.ts\n#EXT-X-ENDLIST\n";
+                else if (path.startsWith("/live/s")) { type = "video/mp2t"; body = QByteArray(188, char(0x47)) + path.mid(6); }
+                s->write("HTTP/1.1 200 OK\r\nContent-Type: " + type + "\r\nContent-Length: " + QByteArray::number(body.size())
+                         + "\r\nConnection: close\r\n\r\n" + body);
+                s->disconnectFromHost();
+            });
+        });
+        CastRelay relay;
+        CastRelay::Source src;
+        src.url = QStringLiteral("http://127.0.0.1:%1/live/ch.m3u8").arg(provider.serverPort());
+        src.contentType = QStringLiteral("video/vnd.dlna.mpeg-tts");
+        src.forceType = true;
+        src.dlnaFeatures = DlnaRenderer::features(true);
+        src.joinHls = true;
+        const QString path = relay.add(src);
+        QVERIFY(path.endsWith(".ts"));
+        QNetworkAccessManager net;
+        QNetworkRequest req{QUrl(relay.urlFor(path, QHostAddress::LocalHost))};
+        req.setRawHeader("getcontentFeatures.dlna.org", "1");
+        // HEAD first, the way the TV does: headers, no body.
+        QNetworkReply *head = net.head(req);
+        QTRY_VERIFY_WITH_TIMEOUT(head->isFinished(), 5000);
+        QCOMPARE(head->header(QNetworkRequest::ContentTypeHeader).toString(), QStringLiteral("video/vnd.dlna.mpeg-tts"));
+        QCOMPARE(head->rawHeader("transferMode.dlna.org"), QByteArray("Streaming"));
+        head->deleteLater();
+        QNetworkReply *r = net.get(req);
+        QTRY_VERIFY_WITH_TIMEOUT(r->isFinished(), 10000);
+        const QByteArray got = r->readAll();
+        // The playlist ended (a short test), so from the start: s7..s10, in order.
+        const QByteArray want = QByteArray(188, char(0x47)) + "s7.ts" + QByteArray(188, char(0x47)) + "s8.ts"
+                              + QByteArray(188, char(0x47)) + "s9.ts" + QByteArray(188, char(0x47)) + "s10.ts";
+        QCOMPARE(got, want);
+        QVERIFY2(asked.mid(0, 2) == (QStringList{"/live/ch.m3u8", "/live/hd.m3u8"}), qPrintable(asked.join(", ")));
+        r->deleteLater();
     }
 
     void cast_relay()
@@ -1866,7 +1941,9 @@ private slots:
         tv.forceType = true;
         tv.dlnaFeatures = DlnaRenderer::features(true);
         askedWith.clear();
-        QNetworkRequest tvReq{QUrl(relay.urlFor(relay.add(tv), QHostAddress::LocalHost))};
+        const QString tvPath = relay.add(tv);
+        QVERIFY2(tvPath.endsWith(".ts"), qPrintable(tvPath));   // Samsung goes by the ending
+        QNetworkRequest tvReq{QUrl(relay.urlFor(tvPath, QHostAddress::LocalHost))};
         tvReq.setRawHeader("getcontentFeatures.dlna.org", "1");
         QNetworkReply *tr = net.get(tvReq);
         QTRY_VERIFY_WITH_TIMEOUT(tr->isFinished(), 5000);

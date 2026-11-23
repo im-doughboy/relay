@@ -19,6 +19,8 @@ Item {
     signal liveRequested()
     signal backRequested()
     signal optionsRequested()
+    signal castRequested()
+    signal multiViewRequested()
 
     readonly property bool catchup: Player.vod.kind === "catchup"
     property real pendingPos: -1          // catch-up seek waiting to be sent
@@ -260,7 +262,15 @@ Item {
             Item {
                 width: parent.width
                 height: 40
+                id: controlsLine
+                // Narrow window: the play controls move next to the time, and
+                // the buttons use short names, rather than overlap.
+                readonly property real centredX: (width - transport.implicitWidth) / 2
+                readonly property bool crowded: centredX < timeText.implicitWidth + 16
+                                                || centredX + transport.implicitWidth > width - buttonsRow.width - 16
+                readonly property bool shortNames: timeText.implicitWidth + 16 + transport.implicitWidth + 16 + buttonsRow.fullWidth > width
                 Text {
+                    id: timeText
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.clock(root.pos) + "  /  " + (root.dur > 0 ? root.clock(root.dur) : "–:––")
                     color: Theme.text
@@ -268,7 +278,9 @@ Item {
                 }
                 // Back / pause / forward (hover for the keys).
                 Row {
-                    anchors.centerIn: parent
+                    id: transport
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: controlsLine.crowded ? timeText.implicitWidth + 16 : controlsLine.centredX
                     spacing: 12
                     BarButton {
                         anchors.verticalCenter: parent.verticalCenter
@@ -296,22 +308,34 @@ Item {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 8
+                    // Width with the long names (the short ones are used when it doesn't fit).
+                    readonly property real fullWidth: {
+                        let w = multiViewButton.width + castButton.width + 2 * spacing
+                        for (let i = 0; i < buttonsRepeater.count; ++i) {
+                            const b = buttonsRepeater.itemAt(i)
+                            if (b) w += b.longWidth + (i > 0 ? spacing : 0)
+                        }
+                        return w
+                    }
                     Repeater {
+                        id: buttonsRepeater
                         model: [
-                            { label: qsTr("Audio"), type: "audio" },
-                            { label: qsTr("Subtitles"), type: "sub" },
-                            { label: qsTr("Picture & sound"), type: "options" },
-                        ].concat(Player.vod.kind === "episode" ? [{ label: qsTr("Next ▸"), type: "next" }]
-                               : root.catchup ? [{ label: qsTr("Live ⇥"), type: "live" }] : [])
+                            { label: qsTr("Audio"), short: qsTr("Audio"), type: "audio" },
+                            { label: qsTr("Subtitles"), short: qsTr("Subs"), type: "sub" },
+                            { label: qsTr("Picture & sound"), short: qsTr("Picture"), type: "options" },
+                        ].concat(Player.vod.kind === "episode" ? [{ label: qsTr("Next ▸"), short: qsTr("Next ▸"), type: "next" }]
+                               : root.catchup ? [{ label: qsTr("Live ⇥"), short: qsTr("Live ⇥"), type: "live" }] : [])
                         delegate: Rectangle {
+                            readonly property real longWidth: longText.implicitWidth + 28
                             height: 36
-                            width: btnText.implicitWidth + 28
+                            width: btnText.implicitWidth + (controlsLine.shortNames ? 20 : 28)
                             radius: 18
                             color: btnMouse.containsMouse ? Theme.focus : "#40FFFFFF"
+                            Text { id: longText; visible: false; text: modelData.label; font: btnText.font }
                             Text {
                                 id: btnText
                                 anchors.centerIn: parent
-                                text: modelData.label
+                                text: controlsLine.shortNames ? modelData.short : modelData.label
                                 color: Theme.text
                                 font.pixelSize: Theme.fontSmall + 1
                             }
@@ -326,6 +350,23 @@ Item {
                                          : root.openTrackMenu(modelData.type, parent)
                             }
                         }
+                    }
+                    // The same as on live TV: multi-view and cast.
+                    BarButton {
+                        id: multiViewButton
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon: Icons.multiview
+                        label: qsTr("Multi-view (back to live TV)"); shortcut: Keymap.label("multiview"); showLabel: false
+                        onClicked: root.multiViewRequested()
+                    }
+                    BarButton {
+                        id: castButton
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon: Icons.cast
+                        label: Cast.active ? qsTr("Casting · stop or move it") : qsTr("Cast to a TV or Chromecast")
+                        shortcut: Keymap.label("cast"); showLabel: false
+                        active: Cast.active
+                        onClicked: root.castRequested()
                     }
                 }
             }

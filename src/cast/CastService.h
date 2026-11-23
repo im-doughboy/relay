@@ -53,7 +53,10 @@ signals:
 
 private:
     void begin(const QString &url, const QVariantMap &source);
-    void serve(const QString &url, const QVariantMap &source, const QString &mime);
+    // makeHls: a TV gets live MPEG-TS as HLS made here (the second try).
+    // joinHls: an HLS channel sent to a TV as one MPEG-TS stream.
+    void serve(const QString &url, const QVariantMap &source, const QString &mime, bool makeHls = false, bool joinHls = false);
+    void retryAsHls();
     void setState(const QString &s);
     void finish(const QString &problem);
 
@@ -65,5 +68,8 @@ private:
     QPointer<ChromecastClient> m_cc;
     QString m_state, m_title, m_path;
     bool m_live = false;
+    QString m_castUrl;
+    QVariantMap m_castSource;
+    bool m_triedHls = false;
     quint64 m_generation = 0;
 };

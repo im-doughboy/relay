@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Relay VERSION 0.2.3 LANGUAGES CXX)
+project(Relay VERSION 0.2.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -67,6 +67,7 @@ add_library(relay_core STATIC
     src/app/Updater.h             src/app/Updater.cpp
     src/cast/TsSegmenter.h        src/cast/TsSegmenter.cpp
     src/cast/CastRelay.h          src/cast/CastRelay.cpp
+    src/cast/HlsJoiner.h          src/cast/HlsJoiner.cpp
     src/cast/CastDevices.h        src/cast/CastDevices.cpp
     src/cast/CastService.h        src/cast/CastService.cpp
     src/app/Log.h                  src/app/Log.cpp

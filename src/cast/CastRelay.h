@@ -41,6 +41,7 @@ public:
         QString contentType;       // what to say it is, when the provider doesn't
         bool forceType = false;    // say contentType even when the provider says something (DLNA TVs)
         QString dlnaFeatures;      // contentFeatures.dlna.org (DLNA TVs ask)
+        bool joinHls = false;      // an HLS channel sent on as one MPEG-TS stream (TVs without HLS)
     };
     // The path (on this server) the receiver should play; starts the server.
     QString add(const Source &source);
@@ -72,9 +73,11 @@ private:
     void pipe(QTcpSocket *socket, const QString &token, const QString &url, const QByteArray &method,
               const QHash<QByteArray, QByteArray> &headers);
     void startFeed(const QString &token);
+    void serveJoined(QTcpSocket *socket, const Source &source, const QByteArray &method,
+                     const QHash<QByteArray, QByteArray> &headers);
     void answerWaiting();
     void reply(QTcpSocket *socket, int status, const QByteArray &type, const QByteArray &body,
-               const QByteArray &method = "GET");
+               const QByteArray &method = "GET", const QString &features = QString());
 
     QTcpServer *m_server;
     QNetworkAccessManager *m_net;
