@@ -26,6 +26,7 @@ QtObject {
     readonly property string play: "M8 5v14l11-7z"                       // filled
     readonly property string pause: "M7 5h3.5v14H7z M13.5 5H17v14h-3.5z"    // filled
     readonly property string rewind: "M11.5 6.5v11l-8-5.5z M20.5 6.5v11l-8-5.5z"      // filled
+    readonly property string skipNext: "M4.5 6.5v11l9-5.5z M16 6.5h3v11h-3z"           // filled: next in line
     readonly property string forward: "M3.5 6.5v11l8-5.5z M12.5 6.5v11l8-5.5z"        // filled
     readonly property string live: "M12 8a4 4 0 1 0 0.01 0z"             // filled
     readonly property string toLive: "M5 6l7 6l-7 6z M13 6l7 6l-7 6z M20 6v12"  // filled-ish

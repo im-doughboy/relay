@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Relay VERSION 0.5.1 LANGUAGES CXX)
+project(Relay VERSION 0.5.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -165,6 +165,7 @@ set(RELAY_QML_FILES
     qml/Badges.qml
     qml/VodCredits.qml
     qml/SourcePicker.qml
+    qml/CastMini.qml
     qml/HiddenManager.qml
     qml/Search.qml
     qml/RenameDialog.qml

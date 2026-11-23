@@ -3,6 +3,23 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.5.2
+
+- **Browse while casting:** open Movies & series, the guide or anything else and a small
+  casting panel stays in the corner: how far in, pause, skip, next, back to the casting screen,
+  stop. Find something and **Add to the queue**, or **Play** it to send it to the TV straight
+  away. Menu (and the phone's Menu) opens the menu while a movie is on the TV; play / pause on
+  the phone or a remote reaches the TV from anywhere.
+- **Fixed: the next episode didn't follow on the TV** after about 20 minutes. Relay kept a
+  paused copy of the episode, the provider dropped that second connection, and Relay took it as
+  the episode ending. Now only the TV plays it (one connection to the provider).
+- The casting screen's "next" button has its own icon (it looked like skip ahead).
+- **Guide with the phone or a controller:** ⏪ ⏩ (LB / RB) change the group (All channels,
+  Favorites, your provider's groups…), and **Guide** while the guide is open goes to the group
+  chooser, without scrolling up past channel 1.
+- Phone remote: the **Type** button is gone (Search does the same: the box to type in appears
+  whenever Relay has one open).
+
 ## 0.5.1
 
 - **Casting movies and episodes:**

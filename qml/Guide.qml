@@ -222,6 +222,11 @@ FocusScope {
     }
 
     visible: opened
+    // The group chooser (All channels, Favorites…), from anywhere in the list.
+    function focusGroups() {
+        guide.groupFocused = true
+        groupChip.forceActiveFocus()
+    }
     Keys.onPressed: (e) => {
         if (e.key === Qt.Key_Escape || e.key === Qt.Key_Back || e.key === Qt.Key_G
                 || e.key === Qt.Key_Backspace) { close(); e.accepted = true }
@@ -501,8 +506,10 @@ FocusScope {
 
             Keys.onPressed: (e) => {
                 switch (e.key) {
-                case Qt.Key_Left: guide.stepGroup(-1); break
-                case Qt.Key_Right: guide.stepGroup(1); break
+                case Qt.Key_Left:
+                case Qt.Key_AudioRewind: guide.stepGroup(-1); break
+                case Qt.Key_Right:
+                case Qt.Key_AudioForward: guide.stepGroup(1); break
                 case Qt.Key_Down:
                 case Qt.Key_Return:
                 case Qt.Key_Enter:
@@ -574,6 +581,9 @@ FocusScope {
                 else currentIndex -= 1
                 break
             case Qt.Key_Down: if (currentIndex < count - 1) currentIndex += 1; break
+            // The controller's LB / RB, the phone's ⏪ ⏩: the group before / after.
+            case Qt.Key_AudioRewind: guide.stepGroup(-1); break
+            case Qt.Key_AudioForward: guide.stepGroup(1); break
             case Qt.Key_Right: guide.moveRight(); break
             case Qt.Key_Left: guide.moveLeft(); break
             case Qt.Key_PageDown: guide.page(1); break

@@ -301,9 +301,9 @@ Window {
         if (!source.url) { toast.show(qsTr("Nothing is playing"), true); return }
         if (Player.vodActive) { source.start = win.vodOnTv ? Cast.position : video.position; win.vodOnTv = true }
         Cast.start(deviceId, source)
-        // One connection to the provider: the TV's, through Relay.
-        if (Player.vodActive) { if (!video.paused) video.togglePause() }
-        else video.stop()
+        // One connection to the provider: the TV's, through Relay (a paused
+        // copy here would hold a second one, and the provider drops it).
+        video.stop()
     }
     function stopCasting() {
         Cast.stop()
@@ -335,6 +335,26 @@ Window {
             toast.show(problem ? problem + " · " + back : qsTr("Casting stopped · %1").arg(back), problem.length > 0)
             if (!Player.vodActive) Player.retry()
         }
+    }
+    // Browsing while casting: a small panel over whatever is open.
+    CastMini {
+        id: castMini
+        z: 28
+        shown: vodBrowser.opened || guide.opened || recordings.opened || channelPanel.opened || search.opened || multiView.opened
+        onStopRequested: win.stopCasting()
+        onNextRequested: { win.saveVodProgress(); win.playWhatsNext() }
+        onBackRequested: {
+            vodBrowser.close(); guide.close(); recordings.close(); channelPanel.close(); search.close()
+            if (multiView.opened) multiView.close()
+            win.returnFocus()
+        }
+    }
+    // Play / pause (a remote, the phone, a keyboard's media key) reaches the TV from anywhere.
+    Shortcut {
+        sequences: [Qt.Key_MediaTogglePlayPause, Qt.Key_MediaPlay, Qt.Key_MediaPause]
+        context: Qt.ApplicationShortcut
+        enabled: Cast.active && !win.showSetup
+        onActivated: Cast.togglePause()
     }
     CastBar {
         z: 6.5   // over the movie controls and live bar, under the menu bar
@@ -900,6 +920,10 @@ Window {
     // phone). Most become the key the user has for them.
     Connections {
         target: Remote
+        // Play / pause while browsing during a cast: the TV (the browser doesn't use it).
+        function onTriggered(name) {
+            if (name === "playpause" && Cast.active && castMini.visible) Cast.togglePause()
+        }
         function onAction(name) {
             if (name === "menu") { win.toggleMenu(); return }
             // These go straight there from wherever you are (Settings included).
@@ -924,7 +948,7 @@ Window {
             if (vodBrowser.opened) { vodBrowser.showHome(); return }
             castPicker.close(); playerOptions.close(); shortcuts.opened = false; recordings.close()
             if (multiView.opened) multiView.close()
-            if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
+            if (Player.vodActive && !win.vodOnTv) { saveVodProgress(); Player.stopVod() }
             win.openVod(Vod.section)
             return
         }
@@ -933,7 +957,8 @@ Window {
         if (multiView.opened) multiView.close()
         if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
         vodBrowser.close()
-        if (name === "guide") { if (!guide.opened) win.openGuide() }
+        // Guide again while it's open: its group chooser (All channels…).
+        if (name === "guide") { if (!guide.opened) win.openGuide(); else guide.focusGroups() }
         else if (name === "search") win.openSearch()
         else if (name === "favorites") {
             guide.close()
@@ -958,13 +983,14 @@ Window {
         castPicker.close(); playerOptions.close(); search.close(); shortcuts.opened = false
         guide.close(); channelPanel.close(); recordings.close()
         if (multiView.opened) multiView.close()
-        if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
+        // A movie on the TV keeps playing there: Home is its casting screen.
+        if (Player.vodActive && !win.vodOnTv) { saveVodProgress(); Player.stopVod() }
         vodBrowser.close()
         returnFocus()
     }
     // Menu: what right-click offers there.
     function openMenu() {
-        if (Player.vodActive) { vodOsd.show(); openPlayerOptions(); return }
+        if (Player.vodActive && !win.vodOnTv) { vodOsd.show(); openPlayerOptions(); return }
         if (win.showSetup || pinDialog.opened) return
         // Anywhere else: the menu (it's how a controller gets to Movies and Settings).
         liveMenu.popup(win.width / 2 - 130, win.height / 2 - 170)

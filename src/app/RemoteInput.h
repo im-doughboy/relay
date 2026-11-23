@@ -41,6 +41,8 @@ public:
     bool setFieldText(const QString &text);
 
 signals:
+    // Every button pressed (remote, controller, phone), before it's acted on.
+    void triggered(const QString &name);
     void action(const QString &name);
     void used(const QString &source);   // "remote", "controller", "phone" (Settings shows what's connected)
 

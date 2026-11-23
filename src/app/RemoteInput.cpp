@@ -86,6 +86,7 @@ void RemoteInput::sendKey(int key, int modifiers)
 
 void RemoteInput::trigger(const QString &name)
 {
+    emit triggered(name);
     if (const int key = keyFor(name)) { sendKey(key); return; }
     if (!name.isEmpty()) emit action(name);
 }

@@ -117,7 +117,7 @@ Item {
                 }
                 BarButton {
                     visible: !Cast.live && (Vod.queue.length > 0 || Player.vod.kind === "episode")
-                    icon: Icons.forward; iconFilled: true
+                    icon: Icons.skipNext; iconFilled: true
                     label: Vod.queue.length > 0 ? qsTr("Play the next in the queue") : qsTr("Next episode"); shortcut: "N"; showLabel: false
                     onClicked: root.nextRequested()
                 }
@@ -150,7 +150,7 @@ Item {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 visible: !Cast.live && Cast.duration > 0
-                text: qsTr("← → skip back and ahead   ·   ↑ ↓ a minute   ·   Space pause")
+                text: qsTr("← → skip back and ahead   ·   ↑ ↓ a minute   ·   Space pause   ·   Menu: browse while it plays")
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontSmall
             }
