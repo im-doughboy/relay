@@ -285,6 +285,27 @@ FocusScope {
             }
         }
 
+        // A narrow window: first the keys go from the buttons, then the labels
+        // (all but Watch; hovering still names them). 0 everything, 1 no
+        // keys, 2 icons.
+        readonly property int squeeze: {
+            const left = [watchButton, fromStartButton, recordButton, seriesButton, remindButton]
+            const right = [nowButton, searchButton]
+            const width = (level) => {
+                let sum = 0, n = 0
+                for (const b of left.concat(right)) {
+                    if (!b.visible) continue
+                    const labelled = b !== seriesButton || actions.seriesOn
+                    sum += !labelled ? b.size : level === 0 ? b.fullWidth
+                         : level === 1 || b.accent ? b.labelledWidth : b.size
+                    ++n
+                }
+                return sum + n * 8 + 40   // spacing, and ✕
+            }
+            const room = header.width - 64 - 24
+            return width(0) <= room ? 0 : width(1) <= room ? 1 : 2
+        }
+
         // The mouse's way to do what the keys do here.
         Row {
             id: actions
@@ -298,6 +319,8 @@ FocusScope {
             readonly property bool future: !!p && p.start > guide.nowMs
             readonly property bool ended: !!p && p.stop <= guide.nowMs
             BarButton {
+                id: watchButton
+                showShortcut: header.squeeze === 0
                 accent: true
                 icon: Icons.play; iconFilled: true
                 label: guide.selectedCatchup === "past" ? qsTr("Watch catch-up") : qsTr("Watch")
@@ -306,6 +329,8 @@ FocusScope {
                 onClicked: guide.tuneCurrent()
             }
             BarButton {
+                id: fromStartButton
+                showShortcut: header.squeeze === 0; showLabel: header.squeeze < 2
                 icon: Icons.fromStart
                 label: qsTr("From the start")
                 shortcut: "B"
@@ -313,6 +338,8 @@ FocusScope {
                 onClicked: guide.watchFromStart()
             }
             BarButton {
+                id: recordButton
+                showShortcut: header.squeeze === 0; showLabel: header.squeeze < 2
                 icon: Icons.record; iconFilled: actions.mark === "recording"
                 label: actions.mark === "recording" ? qsTr("Cancel recording") : qsTr("Record")
                 shortcut: "R"
@@ -321,15 +348,19 @@ FocusScope {
                 onClicked: guide.toggleRecording()
             }
             BarButton {
+                id: seriesButton
+                showShortcut: header.squeeze === 0
                 icon: Icons.recordSeries
                 label: actions.seriesOn ? qsTr("Stop recording series") : qsTr("Record series")
                 shortcut: "Shift+R"
-                showLabel: actions.seriesOn
+                showLabel: actions.seriesOn && header.squeeze < 2
                 active: actions.seriesOn
                 visible: !!actions.p && !actions.p.placeholder
                 onClicked: guide.toggleSeries()
             }
             BarButton {
+                id: remindButton
+                showShortcut: header.squeeze === 0; showLabel: header.squeeze < 2
                 icon: Icons.bell
                 label: actions.mark === "reminder" ? qsTr("Remove reminder") : qsTr("Remind me")
                 shortcut: "M"
@@ -343,12 +374,15 @@ FocusScope {
             anchors.rightMargin: 32
             y: actions.y
             spacing: 8
-            BarButton { icon: Icons.now; label: qsTr("Now"); shortcut: "Home"; onClicked: guide.jumpToNow() }
-            BarButton { icon: Icons.search; label: qsTr("Search"); shortcut: "/"; onClicked: guide.searchRequested() }
+            BarButton { id: nowButton; showShortcut: header.squeeze === 0; showLabel: header.squeeze < 2
+                        icon: Icons.now; label: qsTr("Now"); shortcut: "Home"; onClicked: guide.jumpToNow() }
+            BarButton { id: searchButton; showShortcut: header.squeeze === 0; showLabel: header.squeeze < 2
+                        icon: Icons.search; label: qsTr("Search"); shortcut: "/"; onClicked: guide.searchRequested() }
             CloseButton { size: 40; onClicked: guide.close() }
         }
 
         Column {
+            id: about
             x: 32
             y: 28
             width: preview.x - 64
@@ -406,6 +440,11 @@ FocusScope {
                 maximumLineCount: 4
                 elide: Text.ElideRight
                 lineHeight: 1.2
+                // Only what fits above the buttons (a small window has room for less).
+                readonly property real room: actions.y - 14 - about.y - y
+                height: Math.max(0, Math.min(implicitHeight, room))
+                clip: true
+                opacity: room >= font.pixelSize * 1.2 ? 1 : 0
             }
         }
     }

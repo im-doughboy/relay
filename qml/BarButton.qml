@@ -18,6 +18,11 @@ Rectangle {
     signal clicked()
 
     readonly property bool hovered: mouse.containsMouse
+    // How wide it would be with its label, and with its label and key (for
+    // rows that drop the keys, then the labels, when the window is narrow).
+    readonly property real labelledWidth: 20 + (icon.length > 0 ? icon_.width : 0)
+                                          + (label.length > 0 ? (icon.length > 0 ? 8 : 0) + labelText.implicitWidth : 0)
+    readonly property real fullWidth: labelledWidth + (shortcut.length > 0 && label.length > 0 ? 8 + keyCap.implicitWidth : 0)
 
     implicitHeight: size
     implicitWidth: labelText.visible ? content.implicitWidth + 20 : size
@@ -54,6 +59,7 @@ Rectangle {
             font.weight: root.accent ? Font.DemiBold : Font.Medium
         }
         KeyCap {
+            id: keyCap
             anchors.verticalCenter: parent.verticalCenter
             visible: root.showLabel && root.showShortcut && root.shortcut.length > 0 && root.label.length > 0
             text: root.shortcut

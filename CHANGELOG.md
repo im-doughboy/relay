@@ -11,6 +11,9 @@ under **What's new** when it offers the update. Write it for the people using Re
 - **When a TV can't play something, Relay says so** and goes back to playing it here, instead
   of waiting on "Starting…".
 - Relay's log now notes what the TV asked for and answered, which helps if a TV still refuses.
+- **TV guide in a smaller window:** the programme description no longer runs over the Watch and
+  Record buttons. It's shortened to the room there is, and when the buttons don't all fit they
+  drop their key hints, then their names (hover to see them).
 
 ## 0.2.2
 
