@@ -553,7 +553,7 @@ and SQL (SQLite) modules, **libmpv**, **zlib**, and CMake 3.21+. (It also builds
 ### macOS
 
 ```sh
-brew install qt mpv pkg-config cmake
+brew install qt mpv pkg-config cmake sdl2
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 open build/relay.app
@@ -565,7 +565,7 @@ Install MSYS2 from msys2.org, open **MSYS2 UCRT64**, then:
 
 ```bash
 pacman -Syu
-pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,qt6-base,qt6-declarative,mpv}
+pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,qt6-base,qt6-declarative,mpv,SDL2}
 cd /c/dev/relay
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
@@ -642,7 +642,7 @@ build\relay.exe
 ### Linux
 
 ```sh
-sudo apt install qt6-declarative-dev qt6-base-dev libmpv-dev zlib1g-dev cmake \
+sudo apt install qt6-declarative-dev qt6-base-dev libmpv-dev zlib1g-dev libsdl2-dev cmake \
   libqt6sql6-sqlite qml6-module-qtquick-controls qml6-module-qtquick-dialogs
 cmake -S . -B build && cmake --build build -j && ./build/relay
 ```

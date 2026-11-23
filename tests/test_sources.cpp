@@ -15,6 +15,11 @@
 #include "app/Trakt.h"
 #include "app/Updater.h"
 #include "app/RemoteInput.h"
+#include "app/Gamepads.h"
+#ifdef RELAY_HAVE_SDL
+# define SDL_MAIN_HANDLED
+# include <SDL.h>
+#endif
 #include "cast/CastDevices.h"
 #include "cast/CastRelay.h"
 #include "cast/HlsJoiner.h"
@@ -1924,6 +1929,40 @@ private slots:
         QCOMPARE(spy.count(), 1);
         QCOMPARE(spy.first().first().toString(), QString("guide"));
         QVERIFY(RemoteInput::actions().contains("home"));
+    }
+
+    // Controller buttons and sticks -> Relay's actions; a virtual pad end to end.
+    void gamepad_actions()
+    {
+        QCOMPARE(Gamepads::actionForButton(0), QString("ok"));       // A / Cross
+        QCOMPARE(Gamepads::actionForButton(1), QString("back"));     // B / Circle
+        QCOMPARE(Gamepads::actionForButton(3), QString("guide"));    // Y / Triangle
+        QCOMPARE(Gamepads::actionForButton(5), QString("home"));     // Xbox / PS button
+        QCOMPARE(Gamepads::actionForButton(11), QString("up"));      // D-pad
+        QCOMPARE(Gamepads::actionForAxis(1, -30000), QString("up"));
+        QCOMPARE(Gamepads::actionForAxis(1, 3000), QString());       // resting: nothing
+        QCOMPARE(Gamepads::actionForAxis(5, 30000), QString("pagedown"));
+#ifdef RELAY_HAVE_SDL
+        RemoteInput remote;
+        Gamepads pads(&remote);
+        QVERIFY(pads.available());
+        pads.setRequireActive(false);
+        QSignalSpy connected(&pads, &Gamepads::connectedChanged);
+        QSignalSpy actions(&remote, &RemoteInput::action);
+        const int index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
+                                                    SDL_CONTROLLER_BUTTON_MAX, 0);
+        QVERIFY2(index >= 0, SDL_GetError());
+        SDL_Joystick *j = SDL_JoystickOpen(index);
+        QVERIFY(j);
+        QTRY_VERIFY(!pads.connected().isEmpty());
+        SDL_JoystickSetVirtualButton(j, SDL_CONTROLLER_BUTTON_Y, 1);
+        QTRY_COMPARE(actions.count(), 1);
+        QCOMPARE(actions.first().first().toString(), QString("guide"));
+        SDL_JoystickSetVirtualButton(j, SDL_CONTROLLER_BUTTON_Y, 0);
+        SDL_JoystickClose(j);
+        SDL_JoystickDetachVirtual(index);
+        QTRY_VERIFY(pads.connected().isEmpty());
+#endif
     }
 
     void cast_relay()

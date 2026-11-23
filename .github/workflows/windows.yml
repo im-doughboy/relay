@@ -46,7 +46,7 @@ jobs:
           pacboy: >-
             toolchain:p cmake:p ninja:p pkgconf:p
             qt6-base:p qt6-declarative:p qt6-tools:p
-            mpv:p zlib:p nsis:p
+            mpv:p zlib:p nsis:p SDL2:p
 
       - name: Version
         id: version

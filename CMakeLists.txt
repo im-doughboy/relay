@@ -66,6 +66,7 @@ add_library(relay_core STATIC
     src/app/Trakt.h               src/app/Trakt.cpp
     src/app/Updater.h             src/app/Updater.cpp
     src/app/RemoteInput.h         src/app/RemoteInput.cpp
+    src/app/Gamepads.h            src/app/Gamepads.cpp
     src/cast/TsSegmenter.h        src/cast/TsSegmenter.cpp
     src/cast/CastRelay.h          src/cast/CastRelay.cpp
     src/cast/HlsJoiner.h          src/cast/HlsJoiner.cpp
@@ -94,6 +95,19 @@ target_link_libraries(relay_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::Quick Qt6::Network Qt6::Concurrent Qt6::OpenGL Qt6::Sql
     ZLIB::ZLIB mpv_lib)
 # System credential store for the playlist login (SecretStore).
+# Game controllers (Xbox, PlayStation, Switch…) through SDL2; without it Relay
+# builds, but doesn't see controllers.
+if(PkgConfig_FOUND)
+    pkg_check_modules(SDL2 QUIET IMPORTED_TARGET sdl2)
+endif()
+if(TARGET PkgConfig::SDL2)
+    target_link_libraries(relay_core PUBLIC PkgConfig::SDL2)
+    target_compile_definitions(relay_core PUBLIC RELAY_HAVE_SDL)
+    message(STATUS "Game controllers: SDL2 ${SDL2_VERSION}")
+else()
+    message(STATUS "Game controllers: off (SDL2 not found; pacman -S mingw-w64-ucrt-x86_64-SDL2)")
+endif()
+
 if(WIN32)
     target_link_libraries(relay_core PUBLIC advapi32 dwmapi)
 elseif(APPLE)
