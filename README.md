@@ -25,11 +25,13 @@ Click **More info → Run anyway**. A portable `.zip` is on the same page if you
   several playlists side by side
 - **TV guide:** XMLTV guides, now/next in the channel list, a full guide grid, reminders
 - **Pause live TV, catch-up and recordings**, including recording a whole series
-- **Movies and series** from your provider, with posters and details from TMDB
+- **Movies and series** browsed like a streaming service, with backdrops, trailers, and posters
+  and details from TMDB
 - **Multi-view** (up to four channels at once) and picture-in-picture
 - **Favorites, hidden channels, search, renaming and reordering**, and a parental PIN
 - **Trakt:** marks what you watch and imports what you've already seen
 - **Casting** to a Chromecast or a DLNA smart TV
+- **Remotes, game controllers and your phone** as a remote
 - **Automatic updates** from this page's releases
 
 The sections below describe each feature in detail.
@@ -128,8 +130,18 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   refreshed once a day, or from Settings → **Update movies**. Other M3U playlists show the
   movie and episode entries they contain, with episodes grouped into series by their
   "S01 E02" names.
-- Browse by category, search by typing, change the order with **O** (default, recently added,
-  A–Z, top rated, newest), **Tab** switches between Movies and Series, **F** adds a favorite.
+- It opens like a streaming service: a **spotlight** on the selected title (backdrop, year,
+  length, rating, genres, plot) and **rows** under it: Continue watching, Favorites, Recently
+  added, Top rated, then each of your provider's categories. Move with the arrows (or a remote,
+  controller or the phone), **Enter** opens the title, **P** plays it, **F** adds a favorite,
+  and **Up** from the first row reaches the spotlight's buttons. Each row ends with **See all**,
+  the full grid of that category, where **O** changes the order (default, recently added, A–Z,
+  top rated, newest). Typing searches; **Tab** switches between Movies and Series.
+- **Trailers:** after a moment on a title, its trailer plays quietly behind the spotlight (the
+  speaker button turns the sound on; Settings turns this off). The title's page has **Trailer**
+  to watch it full size. Trailers come from your provider (Xtream servers often list one) or
+  TMDB, and YouTube ones play through [yt-dlp](https://github.com/yt-dlp/yt-dlp), which the
+  Windows download includes and keeps up to date; without it they open in the browser.
 - **Continue watching** keeps your place in movies and episodes. A movie counts as watched at
   90 %, and finishing an episode queues the next one. Delete removes an item from the list.
 - Playback: **← →** seek 10 s (Shift: 1 min), **↑ ↓** 1 min, Page Up/Down 10 min, Space pause,
@@ -579,7 +591,7 @@ Install MSYS2 from msys2.org, open **MSYS2 UCRT64**, then:
 
 ```bash
 pacman -Syu
-pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,qt6-base,qt6-declarative,mpv,SDL2}
+pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,qt6-base,qt6-declarative,mpv,SDL2,yt-dlp}
 cd /c/dev/relay
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build

@@ -304,6 +304,7 @@ void MpvItem::onRenderContextReady()
 void MpvItem::play(const QString &url, const QString &userAgent, const QString &referrer)
 {
     if (!m_core->mpv || url.isEmpty()) return;
+    m_audioFile.clear();
     m_url = url;
     m_userAgent = userAgent;
     m_referrer = referrer;
@@ -322,6 +323,7 @@ void MpvItem::play(const QString &url, const QString &userAgent, const QString &
 void MpvItem::playVod(const QString &url, double startSeconds)
 {
     if (!m_core->mpv || url.isEmpty()) return;
+    if (url != m_audioFileFor) m_audioFile.clear();   // playTrailer's audio goes with its video only
     m_url = url;
     m_userAgent.clear();
     m_referrer.clear();
@@ -337,6 +339,14 @@ void MpvItem::playVod(const QString &url, double startSeconds)
     setReconnecting(false);
     resetVideoInfo();
     load();
+}
+
+void MpvItem::playTrailer(const QString &video, const QString &audio)
+{
+    if (!m_core->mpv || video.isEmpty()) return;
+    m_audioFile = audio;
+    m_audioFileFor = video;
+    playVod(video, 0);
 }
 
 void MpvItem::seek(double seconds, bool relative)
@@ -793,6 +803,8 @@ void MpvItem::load()
     const QByteArray start = m_vod && m_startPos > 1
         ? "+" + QByteArray::number(m_startPos, 'f', 1) : QByteArray("none");
     mpv_set_property_string(mpv, "start", start.constData());
+    // A trailer comes as separate video and audio addresses (YouTube).
+    mpv_set_property_string(mpv, "audio-files", m_audioFile.toUtf8().constData());
     // Live TV: no captions unless asked for (some streams mark a broken
     // caption track as the default); movies: mpv's usual choice.
     mpv_set_property_string(mpv, "sid", m_vod || m_wantCaptions ? "auto" : "no");

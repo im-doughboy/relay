@@ -15,13 +15,46 @@ FocusScope {
     signal pinRequested(string reason, var onOk)
 
     readonly property int columns: Math.max(3, Math.floor(grid.width / 190))
+    // The browse home (rows and a spotlight) or a category's full grid.
+    property bool browsing: true
+
+    function showHome() {
+        browsing = true
+        if (searchField.text.length) searchField.text = ""
+        Vod.filter = ""
+        home.focusRows()
+    }
+    function showGrid() {
+        browsing = false
+        grid.forceActiveFocus()
+    }
+    // "See all" on a row of the browse home.
+    function seeAll(id) {
+        if (id === "recent" || id === "top") {
+            Vod.sort = id === "recent" ? 1 : 3
+            Vod.category = "all"
+        } else {
+            const i = Vod.categories.findIndex(c => c.id === id)
+            if (i >= 0) selectCategory(i)
+            else Vod.category = id
+        }
+        syncCategory()
+        showGrid()
+    }
+    // Esc in the grid: clear the search, then back to browsing.
+    function back() {
+        if (searchField.text.length) { searchField.text = ""; Vod.filter = ""; if (!browsing) grid.forceActiveFocus(); return }
+        if (!browsing) showHome()
+        else close()
+    }
 
     function open(section) {
         if (section !== undefined) Vod.section = section
         opened = true
         Vod.ensureLoaded()
         syncCategory()
-        grid.forceActiveFocus()
+        if (Vod.filter.length) showGrid()
+        else showHome()
     }
     // Straight to one title (from search, or back from playback).
     function openDetails(kind, id, preview) {
@@ -69,7 +102,7 @@ FocusScope {
     }
     // Tab: Movies → Series → Recordings
     function switchSection() {
-        if (Vod.section === 0) { Vod.section = 1; syncCategory() }
+        if (Vod.section === 0) { Vod.section = 1; syncCategory(); if (browsing) home.focusRows() }
         else recordingsRequested()
     }
     function cycleSort() {
@@ -146,7 +179,7 @@ FocusScope {
                         hoverEnabled: true
                         onClicked: {
                             if (index === 2) { root.recordingsRequested(); return }
-                            Vod.section = index; root.syncCategory(); grid.forceActiveFocus()
+                            Vod.section = index; root.syncCategory(); root.showHome()
                         }
                     }
                 }
@@ -179,9 +212,12 @@ FocusScope {
             // shrinks, then the order button shows only ⇅).
             readonly property real room: closeButton.x - 12 - (tabs.x + tabs.width + 20)
             readonly property bool compactSort: room - (sortFull.width + 32) - spacing < 160
+            // Very narrow: no order button at all (O still changes the order).
+            readonly property bool noSort: room - 44 - spacing < 120
             TextMetrics { id: sortFull; font: sortText.font; text: "⇅  " + Vod.sortNames[Vod.sort] }
 
             Rectangle {   // order
+                visible: !root.browsing && !headerRight.noSort
                 height: 44
                 width: headerRight.compactSort ? 44 : sortFull.width + 32
                 radius: Theme.radius
@@ -215,8 +251,9 @@ FocusScope {
 
             TextField {
                 id: searchField
-                width: Math.max(120, Math.min(360, root.width * 0.28,
-                                              headerRight.room - (headerRight.compactSort ? 44 : sortFull.width + 32) - headerRight.spacing))
+                width: Math.max(96, Math.min(360, root.width * 0.28,
+                                             headerRight.room - (root.browsing || headerRight.noSort ? 0
+                                                                 : (headerRight.compactSort ? 44 : sortFull.width + 32) + headerRight.spacing)))
                 height: 44
                 placeholderText: Vod.section === 0 ? qsTr("Search movies") : qsTr("Search series")
                 placeholderTextColor: Theme.textMuted
@@ -239,15 +276,15 @@ FocusScope {
                     color: Theme.textMuted
                     font.pixelSize: 20
                 }
-                onTextChanged: filterTimer.restart()
-                Keys.onDownPressed: grid.forceActiveFocus()
+                onTextChanged: { filterTimer.restart(); if (text.length) root.browsing = false }
+                Keys.onDownPressed: root.browsing ? home.focusRows() : grid.forceActiveFocus()
                 Keys.onReturnPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
                 Keys.onEnterPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
                 Keys.onEscapePressed: {
-                    if (text.length) text = ""
-                    else grid.forceActiveFocus()
+                    if (text.length) { text = ""; Vod.filter = ""; root.showHome() }
+                    else root.browsing ? home.focusRows() : grid.forceActiveFocus()
                 }
-                Keys.onTabPressed: { root.switchSection(); grid.forceActiveFocus() }
+                Keys.onTabPressed: { root.switchSection(); root.browsing ? home.focusRows() : grid.forceActiveFocus() }
             }
         }
         Timer { id: filterTimer; interval: 200; onTriggered: Vod.filter = searchField.text }
@@ -256,6 +293,7 @@ FocusScope {
     // ---- Categories -----------------------------------------------------------
     ListView {
         id: categories
+        visible: !root.browsing
         anchors.top: header.bottom
         anchors.bottom: parent.bottom
         x: 16
@@ -283,7 +321,7 @@ FocusScope {
             case Qt.Key_O: root.cycleSort(); break
             case Qt.Key_K: root.toggleCategoryLock(currentIndex); break
             case Qt.Key_Escape:
-            case Qt.Key_Backspace: root.close(); break
+            case Qt.Key_Backspace: root.back(); break
             default:
                 if (e.text.length && e.text.charCodeAt(0) > 32) {
                     searchField.forceActiveFocus()
@@ -333,6 +371,7 @@ FocusScope {
     // ---- Posters --------------------------------------------------------------
     GridView {
         id: grid
+        visible: !root.browsing
         anchors.top: header.bottom
         anchors.bottom: parent.bottom
         anchors.left: categories.right
@@ -391,7 +430,7 @@ FocusScope {
             case Qt.Key_Tab: root.switchSection(); break
             case Qt.Key_O: root.cycleSort(); break
             case Qt.Key_Escape:
-            case Qt.Key_Backspace: root.close(); break
+            case Qt.Key_Backspace: root.back(); break
             default:
                 if (e.text.length && e.text.charCodeAt(0) > 32 && !(e.modifiers & Qt.ControlModifier)) {
                     searchField.forceActiveFocus()
@@ -535,10 +574,33 @@ FocusScope {
         }
     }
 
+    VodHome {
+        id: home
+        visible: root.browsing && root.opened && !details.opened
+        anchors.top: header.bottom
+        anchors.bottom: parent.bottom
+        width: parent.width
+        onOpenDetails: (kind, id, preview) => details.open(kind, id, preview)
+        onSeeAll: (id) => root.seeAll(id)
+        onPlay: (d) => root.playRequested(d)
+        onMessage: (text) => root.message(text)
+        Keys.onTabPressed: root.switchSection()
+        Keys.onPressed: (e) => {
+            if (e.key === Qt.Key_Backspace) { root.close(); e.accepted = true; return }
+            // Typing searches.
+            if (e.text.length && e.text.charCodeAt(0) > 32 && !(e.modifiers & Qt.ControlModifier)
+                    && e.key !== Qt.Key_P && e.key !== Qt.Key_F) {
+                searchField.forceActiveFocus()
+                searchField.insert(searchField.cursorPosition, e.text)
+                e.accepted = true
+            }
+        }
+    }
+
     VodDetails {
         id: details
         anchors.fill: parent
-        onClosed: grid.forceActiveFocus()
+        onClosed: root.browsing ? home.focusRows() : grid.forceActiveFocus()
         onPlay: (d) => root.playRequested(d)
         onMessage: (text) => root.message(text)
     }

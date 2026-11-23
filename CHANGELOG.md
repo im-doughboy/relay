@@ -3,6 +3,25 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.3.0
+
+- **Movies and Series, redesigned:** they open like a streaming service now. A spotlight shows
+  the selected title with its backdrop, details and plot, and its trailer plays quietly behind
+  it after a moment. Under it are rows: Continue watching, Favorites, Recently added, Top rated,
+  and each of your provider's categories, each ending in **See all** (the full grid, as before).
+  The title page has a bigger backdrop and a **Trailer** button that plays it with sound.
+  Settings can stop trailers starting by themselves.
+- **Game controllers:** Xbox, PlayStation, Switch and other controllers work, by cable or
+  Bluetooth. A is OK, B is back, Y opens the guide; Settings lists every button.
+- **TV-style PC remotes:** Back, OK, Home, Menu, Guide, Info, Search, Favorites, Subtitles and
+  Audio buttons now do what they say, and rewind/fast-forward buttons work.
+- **Your phone as a remote:** turn it on in Settings, scan the QR code, enter the code once.
+  No app needed; only phones on your home network that know the code can use it.
+- **Right-click menus:** right-click the live picture for channel info, the guide, multi-view,
+  picture-in-picture, casting and favorites. Right-click a channel in the list to watch it in
+  multi-view. Menu items are easier to read.
+- **Casting:** adding a Fire TV or Roku as a Chromecast now says plainly that it isn't one.
+
 ## 0.2.4
 
 - **Casting to Samsung TVs:** many providers send channels as HLS (a playlist of short pieces),

@@ -16,6 +16,23 @@
 #include <QSaveFile>
 #include <QtDebug>
 
+// The YouTube trailer among TMDB's videos: an official trailer first, then
+// any trailer, then a teaser.
+QString TmdbClient::trailerKey(const QJsonArray &videos)
+{
+    int best = -1;
+    QString key;
+    for (const QJsonValue &v : videos) {
+        const QJsonObject o = v.toObject();
+        if (o.value(QLatin1String("site")).toString() != QLatin1String("YouTube")) continue;
+        const QString type = o.value(QLatin1String("type")).toString();
+        const int score = (type == QLatin1String("Trailer") ? 4 : type == QLatin1String("Teaser") ? 1 : 0)
+                        + (o.value(QLatin1String("official")).toBool() ? 2 : 0);
+        if (score > best && score > 0) { best = score; key = o.value(QLatin1String("key")).toString(); }
+    }
+    return key;
+}
+
 namespace {
 constexpr int kParallel = 4;
 constexpr qint64 kFoundDays = 30, kMissingDays = 7;
@@ -305,6 +322,8 @@ void TmdbClient::details(const QString &kind, const QString &title, const QStrin
             for (const QJsonValue &g : o.value(QLatin1String("genres")).toArray())
                 genres << g.toObject().value(QLatin1String("name")).toString();
             if (!genres.isEmpty()) st->out.insert(QStringLiteral("genre"), genres.join(QStringLiteral(", ")));
+            const QString trailer = trailerKey(o.value(QLatin1String("videos")).toObject().value(QLatin1String("results")).toArray());
+            if (!trailer.isEmpty()) st->out.insert(QStringLiteral("trailer"), trailer);
             const QJsonObject credits = o.value(QLatin1String("credits")).toObject();
             QStringList cast;
             for (const QJsonValue &c : credits.value(QLatin1String("cast")).toArray()) {
@@ -345,7 +364,7 @@ void TmdbClient::details(const QString &kind, const QString &title, const QStrin
 
         st->left = 1 + (tv ? int(seasons.size()) : 0);
         QUrlQuery withCredits;
-        withCredits.addQueryItem(QStringLiteral("append_to_response"), QStringLiteral("credits"));
+        withCredits.addQueryItem(QStringLiteral("append_to_response"), QStringLiteral("credits,videos"));
         fetch(QStringLiteral("%1|%2").arg(type).arg(id), QStringLiteral("/%1/%2").arg(type).arg(id), withCredits, applyFull);
         if (!tv) return;
         for (int season : seasons) {

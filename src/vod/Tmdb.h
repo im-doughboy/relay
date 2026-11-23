@@ -2,6 +2,7 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QObject>
 #include <QPointer>
 #include <QStringList>
@@ -27,6 +28,7 @@ class TmdbClient : public QObject
     Q_OBJECT
 
 public:
+    static QString trailerKey(const QJsonArray &videos);
     TmdbClient(const QString &cacheDir, QObject *parent = nullptr);
     ~TmdbClient() override;
 

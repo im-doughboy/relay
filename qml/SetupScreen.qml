@@ -1012,6 +1012,24 @@ FocusScope {
             }
         }
 
+        // Trailers in Movies and Series
+        Column {
+            width: card.width
+            spacing: 8
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: qsTr("Trailers: Movies and Series play a title's trailer (from your provider or TMDB) quietly behind it after a moment. More info → Trailer plays it with sound.")
+                      + (Trailers.available ? "" : " " + qsTr("yt-dlp isn't installed, so YouTube trailers open in the browser instead."))
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+            }
+            ActionButton {
+                text: Trailers.autoplay ? qsTr("Trailers play by themselves: on") : qsTr("Trailers play by themselves: off")
+                onClicked: Trailers.autoplay = !Trailers.autoplay
+            }
+        }
+
         // Remotes, game controllers and the phone remote
         Column {
             width: card.width

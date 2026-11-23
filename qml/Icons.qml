@@ -4,6 +4,8 @@ import QtQuick
 // Relay's line icons: SVG path data on a 24×24 grid, drawn by Icon.qml with a
 // round 2 px stroke (the ones marked "filled" are drawn solid).
 QtObject {
+    readonly property string heart: "M12 20.5s-7.5-4.6-7.5-10.1A4.4 4.4 0 0 1 12 7.6a4.4 4.4 0 0 1 7.5 2.8c0 5.5-7.5 10.1-7.5 10.1z"
+    readonly property string info: "M12 21a9 9 0 1 0 0-18a9 9 0 0 0 0 18z M12 11v6 M12 7.5v.5"
     readonly property string download: "M12 4v11 M7 10.5l5 5l5-5 M5 19.5h14"
     readonly property string channels: "M4 6h16M4 12h16M4 18h10"
     readonly property string guide: "M3 5h18v14H3z M3 10h18 M9 10v9 M15 10v9"

@@ -15,6 +15,7 @@
 #include "app/Trakt.h"
 #include "app/Updater.h"
 #include "app/RemoteInput.h"
+#include "vod/Trailers.h"
 #include "app/Gamepads.h"
 #include "app/PhoneRemote.h"
 #ifdef RELAY_HAVE_SDL
@@ -2026,6 +2027,89 @@ private slots:
         phone.setEnabled(false);
         QVERIFY(!phone.running());
         QSettings().remove("phone");
+    }
+
+    // The browse home's rows, and trailers.
+    void vod_browse_and_trailers()
+    {
+        QCOMPARE(Trailers::youtubeId("dQw4w9WgXcQ"), QString("dQw4w9WgXcQ"));
+        QCOMPARE(Trailers::youtubeId("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=3"), QString("dQw4w9WgXcQ"));
+        QCOMPARE(Trailers::youtubeId("https://youtu.be/dQw4w9WgXcQ"), QString("dQw4w9WgXcQ"));
+        QCOMPARE(Trailers::youtubeId("https://www.youtube.com/embed/dQw4w9WgXcQ"), QString("dQw4w9WgXcQ"));
+        QCOMPARE(Trailers::youtubeId("http://cdn/trailer.mp4"), QString());
+        QCOMPARE(Trailers::pageUrl("dQw4w9WgXcQ"), QString("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+        const QJsonArray videos = QJsonDocument::fromJson(js("[{'site':'YouTube','type':'Teaser','key':'tease','official':true},"
+            "{'site':'Vimeo','type':'Trailer','key':'vim'},{'site':'YouTube','type':'Trailer','key':'fan','official':false},"
+            "{'site':'YouTube','type':'Trailer','key':'real','official':true}]")).array();
+        QCOMPARE(TmdbClient::trailerKey(videos), QString("real"));
+        QCOMPARE(TmdbClient::trailerKey(QJsonArray()), QString());
+
+        // yt-dlp (a stand-in here): YouTube -> video and audio addresses, remembered.
+        QTemporaryDir dir;
+#ifndef Q_OS_WIN
+        const QString tool = dir.filePath("yt-dlp");
+        {
+            QFile f(tool);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\necho \"$@\" >> \"$0.calls\"\necho http://v/video.mp4\necho http://v/audio.m4a\n");
+        }
+        QFile::setPermissions(tool, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        qputenv("RELAY_YTDLP", tool.toUtf8());
+        {
+            Trailers t;
+            QVERIFY(t.available());
+            QSignalSpy ok(&t, &Trailers::resolved);
+            t.resolve("dQw4w9WgXcQ");
+            QTRY_COMPARE(ok.count(), 1);
+            QCOMPARE(ok.first().at(1).toString(), QString("http://v/video.mp4"));
+            QCOMPARE(ok.first().at(2).toString(), QString("http://v/audio.m4a"));
+            t.resolve("https://youtu.be/dQw4w9WgXcQ");   // the same one: no second run
+            QCOMPARE(ok.count(), 2);
+            QFile calls(tool + ".calls");
+            QVERIFY(calls.open(QIODevice::ReadOnly));
+            QCOMPARE(calls.readAll().count('\n'), 1);
+            t.resolve("http://cdn/trailer.mp4");          // direct: as it is
+            QCOMPARE(ok.count(), 3);
+            QCOMPARE(ok.last().at(1).toString(), QString("http://cdn/trailer.mp4"));
+        }
+        qunsetenv("RELAY_YTDLP");
+#endif
+
+        // Rows: Continue watching and Favorites first, then the provider's categories.
+        UserLibrary lib(dir.filePath("library.json"));
+        VodService vod(&lib, dir.filePath("vod"));
+        vod.setSource(M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1,Live\nhttp://h/live/u/p/1.ts\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E01\nhttp://h/series/u/p/1.mp4\n"
+            "#EXTINF:-1 group-title=\"Films\",Alpha Film\nhttp://cdn/a.mp4\n"
+            "#EXTINF:-1 group-title=\"Films\",Beta Film\nhttp://cdn/b.mp4\n"
+            "#EXTINF:-1 group-title=\"Other\",Gamma\nhttp://cdn/c.mkv\n"));
+        vod.ensureLoaded();
+        QTRY_VERIFY2(vod.loaded(), qPrintable(vod.status() + " | " + vod.error()));
+        auto ids = [&] { QStringList out; for (const QVariant &v : vod.shelves(24)) out << v.toMap().value("id").toString(); return out; };
+        QCOMPARE(ids(), (QStringList{"c:Films", "c:Other"}));
+        const QVariantMap films = vod.shelves(24).first().toMap();
+        QCOMPARE(films.value("label").toString(), QString("Films"));
+        QCOMPARE(films.value("items").toList().size(), 2);
+        QCOMPARE(films.value("items").toList().first().toMap().value("progress").toDouble(), -1.0);
+
+        QSignalSpy details(&vod, &VodService::detailsReady);
+        const QString gamma = vod.shelves(24).last().toMap().value("items").toList().first().toMap().value("id").toString();
+        vod.requestDetails("movie", gamma);
+        QTRY_COMPARE(details.count(), 1);
+        const QVariantMap d = details.takeFirst().first().toMap();
+        vod.saveProgress(vod.playback(d), 300, 3000);
+        vod.toggleFavorite("movie", gamma);
+        QCOMPARE(ids(), (QStringList{"continue", "favorites", "c:Films", "c:Other"}));
+        const QVariantMap cont = vod.shelves(24).first().toMap().value("items").toList().first().toMap();
+        QCOMPARE(cont.value("title").toString(), QString("Gamma"));
+        QCOMPARE(cont.value("progress").toDouble(), 0.1);
+        // Details asked again (remembered): the favorite and progress as they are now.
+        vod.requestDetails("movie", gamma);
+        QTRY_COMPARE(details.count(), 1);
+        const QVariantMap again = details.takeFirst().first().toMap();
+        QVERIFY(again.value("favorite").toBool());
+        QCOMPARE(again.value("pos").toDouble(), 300.0);
     }
 
     void cast_relay()

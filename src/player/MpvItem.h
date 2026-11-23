@@ -71,6 +71,8 @@ public:
     // A movie or episode: seekable, starts at `startSeconds`, and finishing
     // it is not a dropped connection.
     Q_INVOKABLE void playVod(const QString &url, double startSeconds = 0);
+    // Video and its own audio (a trailer from YouTube).
+    Q_INVOKABLE void playTrailer(const QString &video, const QString &audio);
     Q_INVOKABLE void seek(double seconds, bool relative = true);
     // [{id, label, selected}] for "audio" or "sub"; setTrack(type, -1) turns
     // subtitles off.
@@ -220,4 +222,5 @@ private:
     QTimer m_reconnectTimer;
     QTimer m_stableTimer;             // resets m_attempt after steady playback
     QElapsedTimer m_playingFor;
+    QString m_audioFile, m_audioFileFor;
 };

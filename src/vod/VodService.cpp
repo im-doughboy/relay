@@ -1,6 +1,8 @@
 #include "app/AppSettings.h"
 #include "VodService.h"
 
+#include <QDateTime>
+
 #include "app/Log.h"
 #include "app/UserLibrary.h"
 #include "sources/PortalClient.h"
@@ -288,6 +290,10 @@ void VodService::fillPosters()
 void VodService::publish(const QVariantMap &d)
 {
     auto send = [this](const QVariantMap &out) {
+        // Kept a while: browsing moves across many titles and back.
+        if (m_recentDetails.size() > 400) m_recentDetails.clear();
+        m_recentDetails.insert(out.value(QStringLiteral("kind")).toString() + QLatin1Char(':') + out.value(QStringLiteral("id")).toString(),
+                               {QDateTime::currentSecsSinceEpoch(), out});
         QMetaObject::invokeMethod(this, [this, out] { emit detailsReady(out); }, Qt::QueuedConnection);
     };
     const bool series = d.value(QStringLiteral("kind")).toString() == QLatin1String("series");
@@ -310,7 +316,7 @@ void VodService::publish(const QVariantMap &d)
         if (gen != m_generation) return;
         if (t.isEmpty()) { send(d); return; }
         QVariantMap out = d;
-        for (const char *k : {"plot", "poster", "backdrop", "genre", "cast", "director", "duration", "year"}) {
+        for (const char *k : {"plot", "poster", "backdrop", "genre", "cast", "director", "duration", "year", "trailer"}) {
             const QString key = QLatin1String(k);
             if (out.value(key).toString().isEmpty() && !t.value(key).toString().isEmpty()) out.insert(key, t.value(key));
         }
@@ -1215,6 +1221,78 @@ void VodService::rebuild()
     m_items->setRows(std::move(rows));
 }
 
+QVariantMap VodService::shelfItem(const VodModel::Row &r) const
+{
+    QVariantMap m = itemMap(r.item, r.kind);
+    m.insert(QStringLiteral("subtitle"), r.subtitle);
+    m.insert(QStringLiteral("progressKey"), r.progressKey);
+    const QString key = r.progressKey.isEmpty() && r.kind == QLatin1String("movie")
+        ? QStringLiteral("movie:") + r.item.id : r.progressKey;
+    const QVariantMap p = m_library && !key.isEmpty() ? m_library->vodProgress(key) : QVariantMap();
+    const double dur = p.value(QStringLiteral("dur")).toDouble();
+    const bool watched = p.value(QStringLiteral("watched")).toBool();
+    m.insert(QStringLiteral("watched"), watched);
+    m.insert(QStringLiteral("progress"), watched || dur <= 0 ? -1.0 : qBound(0.0, p.value(QStringLiteral("pos")).toDouble() / dur, 1.0));
+    return m;
+}
+
+QVariantList VodService::shelves(int perRow) const
+{
+    const bool movies = m_section == 0;
+    const QString kind = movies ? QStringLiteral("movie") : QStringLiteral("series");
+    const QVector<VodItem> &items = movies ? m_movies : m_series;
+    const QVector<VodParser::Category> &cats = movies ? m_movieCats : m_seriesCats;
+    perRow = qBound(4, perRow, 60);
+    QVariantList out;
+    auto shelf = [&](const QString &id, const QString &label, int count, const QVariantList &list) {
+        if (!list.isEmpty())
+            out.append(QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("label"), label},
+                                   {QStringLiteral("count"), count}, {QStringLiteral("items"), list}});
+    };
+    auto fromRows = [&](const QVector<VodModel::Row> &rows) {
+        QVariantList list;
+        for (const VodModel::Row &r : rows) {
+            if (blockedItem(m_section, r.item)) continue;
+            list.append(shelfItem(r));
+            if (list.size() >= perRow) break;
+        }
+        return list;
+    };
+    const QVector<VodModel::Row> cont = continueRows(), favs = favoriteRows();
+    shelf(QStringLiteral("continue"), tr("Continue watching"), int(cont.size()), fromRows(cont));
+    shelf(QStringLiteral("favorites"), tr("Favorites"), int(favs.size()), fromRows(favs));
+
+    auto topBy = [&](auto better, auto keep) {
+        QVector<int> idx;
+        for (int i = 0; i < items.size(); ++i) if (keep(items[i]) && !blockedItem(m_section, items[i])) idx.append(i);
+        const int n = qMin<int>(perRow, int(idx.size()));
+        std::partial_sort(idx.begin(), idx.begin() + n, idx.end(), [&](int a, int b) { return better(items[a], items[b]); });
+        QVector<VodModel::Row> rows;
+        for (int i = 0; i < n; ++i) rows.append(VodModel::Row{items[idx[i]], kind, QString(), QString()});
+        return rows;
+    };
+    // Recently added (when the server says when), and top rated.
+    shelf(QStringLiteral("recent"), tr("Recently added"), int(items.size()),
+          fromRows(topBy([](const VodItem &a, const VodItem &b) { return a.added > b.added; },
+                         [](const VodItem &it) { return it.added > 0; })));
+    shelf(QStringLiteral("top"), tr("Top rated"), int(items.size()),
+          fromRows(topBy([](const VodItem &a, const VodItem &b) { return a.rating > b.rating; },
+                         [](const VodItem &it) { return it.rating > 0; })));
+
+    // Then each of the provider's categories, in its order.
+    QHash<QString, QVector<VodModel::Row>> byCat;
+    QHash<QString, int> counts;
+    for (const VodItem &it : items) {
+        int &n = counts[it.categoryId];
+        ++n;
+        QVector<VodModel::Row> &rows = byCat[it.categoryId];
+        if (rows.size() < perRow && !blockedItem(m_section, it)) rows.append(VodModel::Row{it, kind, QString(), QString()});
+    }
+    for (const VodParser::Category &c : cats)
+        if (counts.value(c.id) > 0) shelf(QStringLiteral("c:") + c.id, c.name, counts.value(c.id), fromRows(byCat.value(c.id)));
+    return out;
+}
+
 QVariantMap VodService::rowAt(int row) const
 {
     const VodModel::Row *r = m_items->row(row);
@@ -1334,6 +1412,15 @@ void VodService::requestDetails(const QString &kind, const QString &id)
                 break;
             }
         }
+    }
+
+    // Seen in the last half hour: the provider's and TMDB's part again, with
+    // progress, favorite and watched marks as they are now.
+    const auto recent = m_recentDetails.constFind(kind + QLatin1Char(':') + id);
+    if (recent != m_recentDetails.constEnd() && QDateTime::currentSecsSinceEpoch() - recent->first < 30 * 60) {
+        const QVariantMap d = decorate(recent->second, kind, item);
+        QMetaObject::invokeMethod(this, [this, d] { emit detailsReady(d); }, Qt::QueuedConnection);
+        return;
     }
 
     auto deliver = [this](const QVariantMap &d) { publish(d); };

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Relay VERSION 0.2.4 LANGUAGES CXX)
+project(Relay VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,6 +91,7 @@ add_library(relay_core STATIC
     src/record/ScheduleService.h   src/record/ScheduleService.cpp
     src/vod/VodService.h           src/vod/VodService.cpp
     src/vod/Tmdb.h               src/vod/Tmdb.cpp
+    src/vod/Trailers.h           src/vod/Trailers.cpp
 )
 target_include_directories(relay_core PUBLIC src)
 target_link_libraries(relay_core PUBLIC
@@ -154,6 +155,7 @@ set(RELAY_QML_FILES
     qml/Guide.qml
     qml/RelayMenu.qml
     qml/RelayMenuItem.qml
+    qml/VodHome.qml
     qml/HiddenManager.qml
     qml/Search.qml
     qml/RenameDialog.qml

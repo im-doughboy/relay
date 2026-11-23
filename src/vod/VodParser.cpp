@@ -344,6 +344,8 @@ static QVariantMap commonInfo(const QJsonObject &info, const VodItem &item)
                                            ? item.poster : firstOf(info, {"movie_image", "cover_big", "cover"}));
     d.insert(QStringLiteral("backdrop"), firstOf(info, {"backdrop_path"}));
     d.insert(QStringLiteral("duration"), durationText(info));
+    // A YouTube id (or address) for the trailer, when the provider has one.
+    d.insert(QStringLiteral("trailer"), firstOf(info, {"youtube_trailer", "trailer"}));
     return d;
 }
 

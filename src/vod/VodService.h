@@ -120,6 +120,11 @@ public:
     // and per episode key, pos, dur, watched.
     Q_INVOKABLE void requestDetails(const QString &kind, const QString &id);
     Q_INVOKABLE QVariantMap rowAt(int row) const;
+    // The browse home's rows for the current section: [{id, label, count, items:
+    // [{id, kind, title, poster, year, rating, progress, watched, subtitle}]}],
+    // Continue watching, Favorites, Recently added, Top rated, then the
+    // provider's categories. id is a category for "See all" (recent/top: all, sorted).
+    Q_INVOKABLE QVariantList shelves(int perRow = 24) const;
 
     // Descriptor for Player.playVod(). `episodeIndex` picks an episode of
     // a series. fromStart ignores saved progress.
@@ -210,6 +215,8 @@ private:
     XtreamParser::Credentials m_creds;
     QString m_account;                 // cache folder for this login
     QString m_portal;                  // PortalClient account (Mode::Portal)
+    QVariantMap shelfItem(const VodModel::Row &r) const;
+    QHash<QString, std::pair<qint64, QVariantMap>> m_recentDetails;   // "kind:id" -> (when, details)
     QHash<QString, QVariantMap> m_portalInfo;   // "movie:<id>" / "series:<id>" -> details
     QVector<Channel> m_m3uMovies, m_m3uEpisodes;
     quint64 m_generation = 0;

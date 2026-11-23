@@ -107,6 +107,21 @@ while :; do
     echo "   added $added"
 done
 
+# ---- trailers: yt-dlp ------------------------------------------------------------
+# Relay plays YouTube trailers through yt-dlp (public domain, github.com/yt-dlp).
+# Without it, trailers open in the browser instead. RELAY_YTDLP=<path> uses a
+# copy you have; otherwise the latest release is downloaded.
+step "yt-dlp (trailers)"
+if [ -n "${RELAY_YTDLP:-}" ] && [ -f "$RELAY_YTDLP" ]; then
+    cp "$RELAY_YTDLP" "$APP/yt-dlp.exe"
+elif curl -fsSL --retry 3 -o "$APP/yt-dlp.exe" https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe; then
+    :
+else
+    rm -f "$APP/yt-dlp.exe"
+    echo "   couldn't download yt-dlp: trailers will open in the browser" >&2
+fi
+[ -f "$APP/yt-dlp.exe" ] && echo "   $(du -k "$APP/yt-dlp.exe" | cut -f1) KB"
+
 # ---- licenses ------------------------------------------------------------------
 # Relay's own (GPL v3), and the license files of every MSYS2 package a bundled
 # library comes from (Qt, mpv, FFmpeg and what they use).
@@ -136,6 +151,11 @@ done
     echo "https://github.com/msys2/MINGW-packages and the projects' own sites:"
     echo
     for pkg in $pkgs; do echo "  ${pkg#"$prefix-"} $(pacman -Q "$pkg" | cut -d' ' -f2)"; done
+    if [ -f "$APP/yt-dlp.exe" ]; then
+        echo
+        echo "yt-dlp.exe (trailers) is yt-dlp, released into the public domain (The Unlicense):"
+        echo "https://github.com/yt-dlp/yt-dlp"
+    fi
 } > "$APP/THIRD-PARTY.txt"
 echo "   $count packages' license files"
 

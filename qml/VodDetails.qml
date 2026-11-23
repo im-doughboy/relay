@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import Relay.Core
+import Relay.Video
 
 // Details for one movie or series: poster, plot and cast, Play / Resume /
 // Start over, and for series the seasons and episodes.
@@ -72,6 +73,42 @@ FocusScope {
         message(watched ? qsTr("Marked as not watched") : qsTr("Marked as watched"))
         refresh()
     }
+    // The trailer, full size over this page, with sound. Esc ends it.
+    property bool trailerOpen: false
+    property string trailerWanted: ""
+    function playTrailer() {
+        if (!info.trailer) return
+        if (!Trailers.available && info.trailer.indexOf("http") !== 0) {   // YouTube without yt-dlp: the browser
+            Qt.openUrlExternally(Trailers.pageUrl(info.trailer))
+            return
+        }
+        trailerWanted = info.trailer
+        trailerOpen = true
+        trailerBusy = true
+        trailerLayer.forceActiveFocus()
+        Trailers.resolve(info.trailer)
+    }
+    property bool trailerBusy: false
+    function closeTrailer() {
+        if (!trailerOpen) return
+        trailerOpen = false
+        trailerWanted = ""
+        trailerVideo.stop()
+        trailerButton.visible ? trailerButton.forceActiveFocus() : primary.forceActiveFocus()
+    }
+    onOpenedChanged: if (!opened) closeTrailer()
+    Connections {
+        target: Trailers
+        function onResolved(t, video, audio) { if (t === root.trailerWanted) { root.trailerBusy = false; trailerVideo.playTrailer(video, audio) } }
+        function onFailed(t, msg) {
+            if (t !== root.trailerWanted) return
+            root.closeTrailer()
+            // No yt-dlp, or YouTube said no: the browser can still show it.
+            Qt.openUrlExternally(Trailers.pageUrl(t))
+            root.message(msg + " · " + qsTr("opened in the browser"))
+        }
+    }
+
     function toggleFavorite() {
         const fav = Vod.toggleFavorite(kind, itemId)
         info = Object.assign({}, info, { favorite: fav })
@@ -122,7 +159,7 @@ FocusScope {
         source: root.info.backdrop || ""
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
-        opacity: status === Image.Ready ? 0.35 : 0
+        opacity: status === Image.Ready ? 0.8 : 0
         Behavior on opacity { NumberAnimation { duration: Theme.animNormal } }
         sourceSize.width: 1280
     }
@@ -131,8 +168,19 @@ FocusScope {
         gradient: Gradient {
             orientation: Gradient.Horizontal
             GradientStop { position: 0.0; color: Theme.background }
-            GradientStop { position: 0.45; color: "#800A0C10" }
-            GradientStop { position: 1.0; color: "#000A0C10" }
+            GradientStop { position: 0.4; color: "#D00B0D12" }
+            GradientStop { position: 0.75; color: "#500B0D12" }
+            GradientStop { position: 1.0; color: "#100B0D12" }
+        }
+    }
+    Rectangle {   // and into the page at the bottom
+        anchors.bottom: backdrop.bottom
+        anchors.right: backdrop.right
+        width: backdrop.width
+        height: backdrop.height * 0.5
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: "transparent" }
+            GradientStop { position: 1.0; color: Theme.background }
         }
     }
 
@@ -226,7 +274,7 @@ FocusScope {
                            ? qsTr("Resume from %1").arg(root.clock(root.info.pos)) : qsTr("Play")
                 }
                 onClicked: root.playMain(false)
-                KeyNavigation.right: startOver.visible ? startOver : favButton
+                KeyNavigation.right: startOver.visible ? startOver : trailerButton.visible ? trailerButton : favButton
                 Keys.onDownPressed: if (root.isSeries) (seasonList.count > 1 ? seasonList : episodeList).forceActiveFocus()
             }
             ActionButton {
@@ -235,6 +283,14 @@ FocusScope {
                 text: qsTr("Start over")
                 onClicked: root.playMain(true)
                 KeyNavigation.left: primary
+                KeyNavigation.right: trailerButton.visible ? trailerButton : favButton
+            }
+            ActionButton {
+                id: trailerButton
+                visible: !!root.info.trailer
+                text: qsTr("▶  Trailer")
+                onClicked: root.playTrailer()
+                KeyNavigation.left: startOver.visible ? startOver : primary
                 KeyNavigation.right: favButton
             }
             ActionButton {
@@ -242,7 +298,7 @@ FocusScope {
                 enabled: !root.loading
                 text: root.info.favorite ? qsTr("★  Favorite") : qsTr("☆  Add to favorites")
                 onClicked: root.toggleFavorite()
-                KeyNavigation.left: startOver.visible ? startOver : primary
+                KeyNavigation.left: trailerButton.visible ? trailerButton : startOver.visible ? startOver : primary
                 KeyNavigation.right: watchedButton.visible ? watchedButton : null
                 Keys.onDownPressed: if (root.isSeries) (seasonList.count > 1 ? seasonList : episodeList).forceActiveFocus()
             }
@@ -474,5 +530,43 @@ FocusScope {
                             : qsTr("Enter: play   ·   Esc: back")
         color: Theme.textMuted
         font.pixelSize: Theme.fontSmall
+    }
+
+    // ---- Trailer over the page ----------------------------------------------------
+    FocusScope {
+        id: trailerLayer
+        anchors.fill: parent
+        visible: root.trailerOpen
+        z: 50
+        Keys.onEscapePressed: root.closeTrailer()
+        Keys.onBackPressed: root.closeTrailer()
+        Keys.onSpacePressed: trailerVideo.togglePause()
+        Keys.onPressed: (e) => { if (e.key === Qt.Key_Backspace || e.key === Qt.Key_MediaTogglePlayPause) { e.key === Qt.Key_Backspace ? root.closeTrailer() : trailerVideo.togglePause(); e.accepted = true } }
+        Rectangle { anchors.fill: parent; color: "black" }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: trailerVideo.togglePause(); onWheel: (w) => w.accepted = true }
+        MpvVideo {
+            id: trailerVideo
+            anchors.fill: parent
+            timeshiftMb: 0
+            volume: 90
+            onFinished: root.closeTrailer()
+            onPlaybackError: (m) => { root.message(qsTr("The trailer didn't play")); root.closeTrailer() }
+        }
+        BusyIndicator { anchors.centerIn: parent; running: root.trailerBusy || trailerVideo.buffering }
+        Text {
+            x: 32; y: 28
+            text: (root.info.title || "") + "  ·  " + qsTr("Trailer")
+            color: "white"
+            font.pixelSize: Theme.fontLarge
+            font.weight: Font.DemiBold
+            style: Text.Raised; styleColor: "#80000000"
+        }
+        CloseButton {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.margins: 24
+            label: qsTr("Close the trailer")
+            onClicked: root.closeTrailer()
+        }
     }
 }
