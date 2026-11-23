@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QHash>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QWindow>
 
 namespace {
@@ -89,6 +90,12 @@ void RemoteInput::trigger(const QString &name)
 
 bool RemoteInput::eventFilter(QObject *watched, QEvent *event)
 {
+    // The mouse's back button (thumb button): back, as on a remote.
+    if (event->type() == QEvent::MouseButtonPress && watched->isWindowType()
+            && static_cast<QMouseEvent *>(event)->button() == Qt::BackButton) {
+        trigger(QStringLiteral("back"));
+        return true;
+    }
     // Only what reaches windows, once (not again for each item it passes).
     if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) && watched->isWindowType()) {
         auto *k = static_cast<QKeyEvent *>(event);

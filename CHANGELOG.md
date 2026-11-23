@@ -3,6 +3,20 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.3.1
+
+- **Settings, reorganized:** a list of sections on the left (Playlist, TV guide, Playback &
+  recording, Movies & series, Trakt, Controls, Parental controls, Updates & backup) and the
+  chosen one on the right, instead of one long page. It works the same with a mouse, a remote,
+  a controller or the phone: ↑ ↓ choose a section, → or OK goes in, arrows move between the
+  options (↑ ↓ by row, ← → along it), Back returns to the list.
+- **Getting around with a controller or the phone:** the Menu button (X on a controller) now
+  opens Movies & series, Recordings and Settings too, from any screen.
+- **A Back button on a movie's or series' page**, and the mouse's back (thumb) button goes back
+  everywhere.
+- Fixed: a harmless "Cannot open file" message on every channel change (from 0.3.0), and missing
+  backdrops when a provider sends an incomplete picture address (TMDB fills them in now).
+
 ## 0.3.0
 
 - **Movies and Series, redesigned:** they open like a streaming service now. A spotlight shows

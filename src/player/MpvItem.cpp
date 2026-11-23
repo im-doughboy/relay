@@ -804,7 +804,11 @@ void MpvItem::load()
         ? "+" + QByteArray::number(m_startPos, 'f', 1) : QByteArray("none");
     mpv_set_property_string(mpv, "start", start.constData());
     // A trailer comes as separate video and audio addresses (YouTube).
-    mpv_set_property_string(mpv, "audio-files", m_audioFile.toUtf8().constData());
+    if (!m_audioFile.isEmpty()) mpv_set_property_string(mpv, "audio-files", m_audioFile.toUtf8().constData());
+    else {
+        const char *clear[] = {"change-list", "audio-files", "clr", "", nullptr};
+        mpv_command(mpv, clear);
+    }
     // Live TV: no captions unless asked for (some streams mark a broken
     // caption track as the default); movies: mpv's usual choice.
     mpv_set_property_string(mpv, "sid", m_vod || m_wantCaptions ? "auto" : "no");

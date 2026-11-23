@@ -532,6 +532,17 @@ FocusScope {
         font.pixelSize: Theme.fontSmall
     }
 
+    // Back to the rows (the same as Esc), for the mouse.
+    CloseButton {
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 24
+        z: 10
+        visible: !root.trailerOpen
+        label: qsTr("Back")
+        onClicked: root.close()
+    }
+
     // ---- Trailer over the page ----------------------------------------------------
     FocusScope {
         id: trailerLayer

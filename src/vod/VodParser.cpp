@@ -342,7 +342,11 @@ static QVariantMap commonInfo(const QJsonObject &info, const VodItem &item)
     d.insert(QStringLiteral("director"), str(info, "director"));
     d.insert(QStringLiteral("poster"), firstOf(info, {"movie_image", "cover_big", "cover"}).isEmpty()
                                            ? item.poster : firstOf(info, {"movie_image", "cover_big", "cover"}));
-    d.insert(QStringLiteral("backdrop"), firstOf(info, {"backdrop_path"}));
+    // Some panels send TMDB's address with no picture in it (".../t/p/w1280").
+    static const QRegularExpression noPicture(QStringLiteral("/t/p/(w\\d+|original)/?$"));
+    QString backdrop = firstOf(info, {"backdrop_path"});
+    if (noPicture.match(backdrop).hasMatch()) backdrop.clear();
+    d.insert(QStringLiteral("backdrop"), backdrop);
     d.insert(QStringLiteral("duration"), durationText(info));
     // A YouTube id (or address) for the trailer, when the provider has one.
     d.insert(QStringLiteral("trailer"), firstOf(info, {"youtube_trailer", "trailer"}));

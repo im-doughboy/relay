@@ -856,8 +856,9 @@ Window {
     // Menu: what right-click offers there.
     function openMenu() {
         if (Player.vodActive) { vodOsd.show(); openPlayerOptions(); return }
-        if (guide.opened || channelPanel.opened || vodBrowser.opened || multiView.opened || win.showSetup) return
-        liveMenu.popup(win.width / 2 - 130, win.height / 2 - 150)
+        if (win.showSetup || pinDialog.opened) return
+        // Anywhere else: the menu (it's how a controller gets to Movies and Settings).
+        liveMenu.popup(win.width / 2 - 130, win.height / 2 - 170)
     }
 
     // Right-click on the live picture.
@@ -865,9 +866,14 @@ Window {
         id: liveMenu
         // Back to the picture's keys, unless the choice opened something that has them now.
         onClosed: Qt.callLater(() => {
-            if (!multiView.opened && !guide.opened && !channelPanel.opened && !castPicker.opened && !pip.active)
+            if (!multiView.opened && !guide.opened && !channelPanel.opened && !castPicker.opened && !pip.active
+                    && !vodBrowser.opened && !recordings.opened && !win.showSetup)
                 win.returnFocus()
         })
+        RelayMenuItem { text: qsTr("Movies & series"); onTriggered: win.openVod(0) }
+        RelayMenuItem { text: qsTr("Recordings"); onTriggered: win.openRecordings(0) }
+        RelayMenuItem { text: qsTr("Settings"); onTriggered: win.openSetupGuarded() }
+        MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: Theme.border } }
         RelayMenuItem { text: qsTr("Channel info"); onTriggered: infoBar.toggle() }
         RelayMenuItem { text: qsTr("Channel list"); onTriggered: channelPanel.open() }
         RelayMenuItem { text: qsTr("TV guide"); onTriggered: win.openGuide() }
