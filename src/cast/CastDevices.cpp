@@ -1,5 +1,7 @@
 #include "CastDevices.h"
 
+#include <QSet>
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -23,6 +25,7 @@ const char kNsHeartbeat[] = "urn:x-cast:com.google.cast.tp.heartbeat";
 const char kNsReceiver[] = "urn:x-cast:com.google.cast.receiver";
 const char kNsMedia[] = "urn:x-cast:com.google.cast.media";
 const char kAvTransport[] = "urn:schemas-upnp-org:service:AVTransport:1";
+const char kConnectionManager[] = "urn:schemas-upnp-org:service:ConnectionManager:1";
 
 QString xmlEscape(const QString &s)
 {
@@ -162,7 +165,7 @@ CastDevice CastDiscovery::parseDescription(const QByteArray &xml, const QUrl &lo
     d.kind = QStringLiteral("dlna");
     QXmlStreamReader r(xml);
     QUrl base = location;
-    QString serviceType, controlUrl, found;
+    QString serviceType, controlUrl, found, connection;
     while (!r.atEnd()) {
         r.readNext();
         if (!r.isStartElement()) continue;
@@ -176,9 +179,12 @@ CastDevice CastDiscovery::parseDescription(const QByteArray &xml, const QUrl &lo
             controlUrl = r.readElementText().trimmed();
             if (found.isEmpty() && serviceType.startsWith(QLatin1String("urn:schemas-upnp-org:service:AVTransport:")))
                 found = controlUrl;
+            if (connection.isEmpty() && serviceType.startsWith(QLatin1String("urn:schemas-upnp-org:service:ConnectionManager:")))
+                connection = controlUrl;
         }
     }
     if (!found.isEmpty()) d.controlUrl = base.resolved(QUrl(found));
+    if (!connection.isEmpty()) d.connectionUrl = base.resolved(QUrl(connection));
     d.address = QHostAddress(location.host());
     d.id = QStringLiteral("dlna:") + d.controlUrl.toString();
     if (d.name.isEmpty()) d.name = location.host();
@@ -317,34 +323,65 @@ DlnaRenderer::DlnaRenderer(const CastDevice &device, QObject *parent)
     connect(&m_poll, &QTimer::timeout, this, &DlnaRenderer::pollState);
 }
 
-QByteArray DlnaRenderer::soapBody(const QString &action, const QString &args)
+QByteArray DlnaRenderer::soapBody(const QString &action, const QString &args, const char *service)
 {
+    // ConnectionManager's actions take no InstanceID.
+    const bool avt = !service || qstrcmp(service, kAvTransport) == 0;
     return QStringLiteral("<?xml version=\"1.0\" encoding=\"utf-8\"?>"
                           "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
                           "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
-                          "<u:%1 xmlns:u=\"%2\"><InstanceID>0</InstanceID>%3</u:%1></s:Body></s:Envelope>")
-        .arg(action, QLatin1String(kAvTransport), args).toUtf8();
+                          "<u:%1 xmlns:u=\"%2\">%3%4</u:%1></s:Body></s:Envelope>")
+        .arg(action, QLatin1String(service ? service : kAvTransport),
+             avt ? QStringLiteral("<InstanceID>0</InstanceID>") : QString(), args).toUtf8();
+}
+
+QString DlnaRenderer::features(bool live)
+{
+    return live ? QStringLiteral("DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
+                : QStringLiteral("DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000");
+}
+
+QString DlnaRenderer::pickType(const QString &sink, const QString &mime)
+{
+    // Other names TVs use for the same kind of stream, best first.
+    static const QHash<QString, QStringList> aliases{
+        {QStringLiteral("video/mp2t"), {QStringLiteral("video/mp2t"), QStringLiteral("video/vnd.dlna.mpeg-tts"),
+                                        QStringLiteral("video/mpeg"), QStringLiteral("video/x-mpegts")}},
+        {QStringLiteral("video/x-matroska"), {QStringLiteral("video/x-matroska"), QStringLiteral("video/x-mkv"),
+                                              QStringLiteral("video/mkv")}},
+        {QStringLiteral("video/mp4"), {QStringLiteral("video/mp4"), QStringLiteral("video/mpeg4")}},
+        {QStringLiteral("video/x-msvideo"), {QStringLiteral("video/x-msvideo"), QStringLiteral("video/avi")}},
+    };
+    QSet<QString> offered;
+    for (const QString &entry : sink.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QStringList f = entry.trimmed().split(QLatin1Char(':'));
+        if (f.size() >= 3 && f[0].compare(QLatin1String("http-get"), Qt::CaseInsensitive) == 0) offered.insert(f[2].toLower());
+    }
+    if (offered.isEmpty()) return mime;
+    for (const QString &name : aliases.value(mime, {mime}))
+        if (offered.contains(name)) return name;
+    return mime;
 }
 
 QByteArray DlnaRenderer::didl(const QString &url, const QString &title, const QString &mime, bool live)
 {
-    const QString flags = live ? QStringLiteral("DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
-                               : QStringLiteral("DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000");
     return QStringLiteral("<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" "
                           "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">"
                           "<item id=\"relay\" parentID=\"0\" restricted=\"1\"><dc:title>%1</dc:title>"
                           "<upnp:class>object.item.videoItem</upnp:class>"
                           "<res protocolInfo=\"http-get:*:%2:%3\">%4</res></item></DIDL-Lite>")
-        .arg(xmlEscape(title), mime, flags, xmlEscape(url)).toUtf8();
+        .arg(xmlEscape(title), mime, features(live), xmlEscape(url)).toUtf8();
 }
 
-void DlnaRenderer::call(const QString &action, const QString &args, std::function<void(bool, const QByteArray &)> done)
+void DlnaRenderer::call(const QString &action, const QString &args, std::function<void(bool, const QByteArray &)> done,
+                        const QUrl &url, const char *service)
 {
-    QNetworkRequest req(m_device.controlUrl);
+    const char *svc = service ? service : kAvTransport;
+    QNetworkRequest req(url.isValid() ? url : m_device.controlUrl);
     req.setRawHeader("Content-Type", "text/xml; charset=\"utf-8\"");
-    req.setRawHeader("SOAPAction", QStringLiteral("\"%1#%2\"").arg(QLatin1String(kAvTransport), action).toUtf8());
+    req.setRawHeader("SOAPAction", QStringLiteral("\"%1#%2\"").arg(QLatin1String(svc), action).toUtf8());
     req.setTransferTimeout(8000);
-    QNetworkReply *reply = m_net->post(req, soapBody(action, args));
+    QNetworkReply *reply = m_net->post(req, soapBody(action, args, svc));
     connect(reply, &QNetworkReply::finished, this, [reply, action, done] {
         reply->deleteLater();
         const bool ok = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200;
@@ -354,9 +391,43 @@ void DlnaRenderer::call(const QString &action, const QString &args, std::functio
     });
 }
 
+void DlnaRenderer::acceptedType(const QString &mime, std::function<void(const QString &)> done)
+{
+    if (m_askedTypes || !m_device.connectionUrl.isValid()) {
+        const QString type = pickType(m_sink, mime);
+        if (type != mime) qInfo().noquote() << "Cast: the TV calls" << mime << "\"" + type + "\"";
+        done(type);
+        return;
+    }
+    call(QStringLiteral("GetProtocolInfo"), QString(), [this, mime, done](bool ok, const QByteArray &body) {
+        m_askedTypes = true;
+        if (ok) {
+            const int at = body.indexOf("<Sink>");
+            const int end = body.indexOf("</Sink>", at);
+            if (at >= 0 && end > at) {
+                QString sink = QString::fromUtf8(body.mid(at + 6, end - at - 6));
+                sink.replace(QLatin1String("&amp;"), QLatin1String("&"));
+                m_sink = sink;
+            }
+            QStringList types;
+            for (const QString &e : m_sink.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+                const QString t = e.section(QLatin1Char(':'), 2, 2);
+                if (!t.isEmpty() && !types.contains(t)) types << t;
+            }
+            qInfo().noquote() << "Cast: the TV plays" << (types.isEmpty() ? QStringLiteral("(it didn't say)") : types.join(QLatin1String(", ")));
+        }
+        const QString type = pickType(m_sink, mime);
+        if (type != mime) qInfo().noquote() << "Cast: the TV calls" << mime << "\"" + type + "\"";
+        done(type);
+    }, m_device.connectionUrl, kConnectionManager);
+}
+
 void DlnaRenderer::load(const QString &url, const QString &title, const QString &mime, bool live)
 {
     m_started = false;
+    m_stoppedPolls = 0;
+    m_lastState.clear();
+    qInfo().noquote() << "Cast: asking the TV to play" << mime << (live ? "(live)" : "");
     const QString meta = QString::fromUtf8(didl(url, title, mime, live));
     call(QStringLiteral("SetAVTransportURI"),
          QStringLiteral("<CurrentURI>%1</CurrentURI><CurrentURIMetaData>%2</CurrentURIMetaData>").arg(xmlEscape(url), xmlEscape(meta)),
@@ -401,14 +472,37 @@ void DlnaRenderer::pollState()
 {
     call(QStringLiteral("GetTransportInfo"), QString(), [this](bool ok, const QByteArray &body) {
         if (!ok) return;
-        const int at = body.indexOf("<CurrentTransportState>");
-        const QByteArray state = at < 0 ? QByteArray() : body.mid(at + 23, body.indexOf('<', at + 23) - at - 23);
+        auto value = [&body](const QByteArray &tag) {
+            const int at = body.indexOf("<" + tag + ">");
+            if (at < 0) return QByteArray();
+            const int from = at + tag.size() + 2;
+            return body.mid(from, body.indexOf('<', from) - from);
+        };
+        const QByteArray state = value("CurrentTransportState");
+        const QByteArray status = value("CurrentTransportStatus");
+        if (QString::fromLatin1(state + '/' + status) != m_lastState) {
+            m_lastState = QString::fromLatin1(state + '/' + status);
+            qInfo().noquote() << "Cast: the TV is" << m_lastState;
+        }
+        if (status == "ERROR_OCCURRED") {
+            m_poll.stop();
+            emit failed(m_started ? tr("The TV stopped with an error") : tr("The TV couldn't play this"));
+            return;
+        }
         if (state == "PLAYING" && !m_started) {
             m_started = true;
             if (m_seekOnStart > 5) { seek(m_seekOnStart); m_seekOnStart = 0; }
             emit playing();
         }
-        else if (state == "STOPPED" && m_started) { m_poll.stop(); emit stopped(); }
+        else if (state == "STOPPED" || state == "NO_MEDIA_PRESENT") {
+            if (m_started) { m_poll.stop(); emit stopped(); return; }
+            // Never started: the TV gave up (Samsung: "An unexpected error has
+            // occurred") and won't say more.
+            if (++m_stoppedPolls >= 3) {
+                m_poll.stop();
+                emit failed(tr("The TV couldn't play this"));
+            }
+        }
     });
 }
 

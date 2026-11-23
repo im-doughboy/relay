@@ -40,7 +40,7 @@ QByteArray statusText(int status)
 
 // Lets receivers that fetch with JavaScript (Chromecast) read the answers, and
 // tells DLNA TVs it's a stream they can play as it comes.
-QByteArray commonHeaders(const QHash<QByteArray, QByteArray> &request)
+QByteArray commonHeaders(const QHash<QByteArray, QByteArray> &request, const QString &features = QString())
 {
     QByteArray h = "Access-Control-Allow-Origin: *\r\n"
                    "Access-Control-Allow-Headers: *\r\n"
@@ -48,7 +48,9 @@ QByteArray commonHeaders(const QHash<QByteArray, QByteArray> &request)
                    "Server: Relay\r\n";
     if (request.contains("getcontentfeatures.dlna.org"))
         h += "transferMode.dlna.org: Streaming\r\n"
-             "contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n";
+             "contentFeatures.dlna.org: "
+             + (features.isEmpty() ? QByteArray("DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
+                                   : features.toLatin1()) + "\r\n";
     return h;
 }
 
@@ -210,6 +212,12 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
         const int colon = lines[i].indexOf(':');
         if (colon > 0) headers.insert(lines[i].left(colon).trimmed().toLower(), lines[i].mid(colon + 1).trimmed());
     }
+    // What the receiver asks for (says why a TV gives up), without the address.
+    qInfo().noquote() << QStringLiteral("Cast: %1 %2 asks %3 /%4%5%6").arg(socket->peerAddress().toString(),
+                             QString::fromLatin1(headers.value("user-agent").left(60)), QString::fromLatin1(method),
+                             path.section(QLatin1Char('/'), 1, 1),
+                             headers.contains("range") ? QStringLiteral(" range ") + QString::fromLatin1(headers.value("range")) : QString(),
+                             headers.contains("getcontentfeatures.dlna.org") ? QStringLiteral(" +dlna features") : QString());
     if (method == "OPTIONS") { reply(socket, 200, QByteArray(), QByteArray()); return; }
     if (method != "GET" && method != "HEAD") { reply(socket, 404, "text/plain", "no"); return; }
 
@@ -279,13 +287,17 @@ void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &ur
         }
         QByteArray h = "HTTP/1.1 " + QByteArray::number(status == 206 ? 206 : status >= 400 ? status : 200) + ' '
                      + statusText(status == 206 ? 206 : 200) + "\r\n";
-        h += commonHeaders(headers);
+        if (source.forceType && !source.contentType.isEmpty()) type = source.contentType.toUtf8();
+        h += commonHeaders(headers, source.dlnaFeatures);
         h += "Content-Type: " + type + "\r\n";
         for (const QByteArray name : {QByteArray("Content-Length"), QByteArray("Content-Range"), QByteArray("Accept-Ranges")})
             if (up->hasRawHeader(name)) h += name + ": " + up->rawHeader(name) + "\r\n";
         h += "Connection: close\r\n\r\n";
         sock->write(h);
         *state = 1;
+        qInfo().noquote() << QStringLiteral("Cast: answered %1 with %2, %3%4").arg(QString::fromLatin1(method))
+                                 .arg(status == 206 ? 206 : status >= 400 ? status : 200).arg(QString::fromLatin1(type),
+                                      up->hasRawHeader("Content-Length") ? QStringLiteral(", ") + QString::fromLatin1(up->rawHeader("Content-Length")) + QStringLiteral(" bytes") : QStringLiteral(", live"));
         if (method == "HEAD") { up->abort(); sock->disconnectFromHost(); }
     });
     connect(up, &QNetworkReply::readyRead, this, [=] {

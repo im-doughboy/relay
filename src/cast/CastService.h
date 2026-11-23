@@ -49,10 +49,11 @@ signals:
     void devicesChanged();
     void stateChanged();
     void message(const QString &text, bool problem);
-    void ended();   // casting stopped (by Relay, the TV or an error)
+    void ended(const QString &problem);   // casting stopped (by Relay, the TV, or an error: why)
 
 private:
     void begin(const QString &url, const QVariantMap &source);
+    void serve(const QString &url, const QVariantMap &source, const QString &mime);
     void setState(const QString &s);
     void finish(const QString &problem);
 

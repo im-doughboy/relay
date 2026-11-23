@@ -1773,6 +1773,41 @@ private slots:
         QCOMPARE(CastService::mimeFor(QStringLiteral("http://p/movie/u/p/5"), false), QStringLiteral("video/mp4"));
     }
 
+    // Samsung TVs name MPEG-TS their own way and give up on streams labelled
+    // otherwise; Relay asks the TV and uses its name.
+    void cast_tv_types()
+    {
+        const QByteArray desc = js("<?xml version='1.0'?><root><URLBase>http://192.168.1.30:9197/</URLBase><device>"
+            "<friendlyName>[TV] Samsung 7 Series (50)</friendlyName><modelName>UN50TU7000</modelName><serviceList>"
+            "<service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType><controlURL>/cm</controlURL></service>"
+            "<service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/avt</controlURL></service>"
+            "</serviceList></device></root>");
+        const CastDevice d = CastDiscovery::parseDescription(desc, QUrl("http://192.168.1.30:9197/dmr"));
+        QCOMPARE(d.controlUrl, QUrl("http://192.168.1.30:9197/avt"));
+        QCOMPARE(d.connectionUrl, QUrl("http://192.168.1.30:9197/cm"));
+
+        const QString samsung = "http-get:*:video/vnd.dlna.mpeg-tts:DLNA.ORG_PN=AVC_TS_HD_NA;DLNA.ORG_FLAGS=ED100000000000000000000000000000,"
+                                "http-get:*:video/mpeg:*,http-get:*:video/mp4:*,http-get:*:video/x-mkv:*";
+        QCOMPARE(DlnaRenderer::pickType(samsung, "video/mp2t"), QString("video/vnd.dlna.mpeg-tts"));
+        QCOMPARE(DlnaRenderer::pickType(samsung, "video/x-matroska"), QString("video/x-mkv"));
+        QCOMPARE(DlnaRenderer::pickType(samsung, "video/mp4"), QString("video/mp4"));
+        // A TV that knows video/mp2t keeps it; one that says nothing gets what it is.
+        QCOMPARE(DlnaRenderer::pickType("http-get:*:video/mpeg:*,http-get:*:video/mp2t:*", "video/mp2t"), QString("video/mp2t"));
+        QCOMPARE(DlnaRenderer::pickType("", "video/mp2t"), QString("video/mp2t"));
+        QCOMPARE(DlnaRenderer::pickType("http-get:*:audio/mpeg:*", "video/mp2t"), QString("video/mp2t"));
+
+        // Asking ConnectionManager takes no InstanceID; AVTransport does.
+        const QByteArray ask = DlnaRenderer::soapBody("GetProtocolInfo", QString(), "urn:schemas-upnp-org:service:ConnectionManager:1");
+        QVERIFY(ask.contains("<u:GetProtocolInfo xmlns:u=\"urn:schemas-upnp-org:service:ConnectionManager:1\"></u:GetProtocolInfo>"));
+        QVERIFY(DlnaRenderer::soapBody("Play", "<Speed>1</Speed>").contains("<InstanceID>0</InstanceID><Speed>1</Speed>"));
+
+        // The same seek flags in the metadata and on the stream: live can't be sought.
+        QVERIFY(DlnaRenderer::didl("http://x/s", "T", "video/vnd.dlna.mpeg-tts", true)
+                    .contains("http-get:*:video/vnd.dlna.mpeg-tts:" + DlnaRenderer::features(true).toUtf8()));
+        QVERIFY(DlnaRenderer::features(true).startsWith("DLNA.ORG_OP=00"));
+        QVERIFY(DlnaRenderer::features(false).startsWith("DLNA.ORG_OP=01"));
+    }
+
     void cast_relay()
     {
         // Playlists are rewritten so every part comes through Relay.
@@ -1822,6 +1857,22 @@ private slots:
         QCOMPARE(r->rawHeader("Access-Control-Allow-Origin"), QByteArray("*"));
         QVERIFY(askedWith.contains("User-Agent: TestAgent/1"));
         r->deleteLater();
+
+        // For a DLNA TV: the TV's name for the type, even over the provider's,
+        // and the same live flags the TV was given.
+        CastRelay::Source tv;
+        tv.url = QStringLiteral("http://127.0.0.1:%1/live/2.ts").arg(provider.serverPort());
+        tv.contentType = QStringLiteral("video/vnd.dlna.mpeg-tts");
+        tv.forceType = true;
+        tv.dlnaFeatures = DlnaRenderer::features(true);
+        askedWith.clear();
+        QNetworkRequest tvReq{QUrl(relay.urlFor(relay.add(tv), QHostAddress::LocalHost))};
+        tvReq.setRawHeader("getcontentFeatures.dlna.org", "1");
+        QNetworkReply *tr = net.get(tvReq);
+        QTRY_VERIFY_WITH_TIMEOUT(tr->isFinished(), 5000);
+        QCOMPARE(tr->header(QNetworkRequest::ContentTypeHeader).toString(), QStringLiteral("video/vnd.dlna.mpeg-tts"));
+        QCOMPARE(QString::fromLatin1(tr->rawHeader("contentFeatures.dlna.org")), DlnaRenderer::features(true));
+        tr->deleteLater();
 
         // Unknown or stopped streams aren't served.
         QNetworkReply *bad = net.get(QNetworkRequest(QUrl(relay.urlFor(QStringLiteral("/s/nope/stream"), QHostAddress::LocalHost))));

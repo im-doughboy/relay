@@ -48,7 +48,8 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
                 visible: Cast.state === "connecting"
-                text: qsTr("Live channels take a few seconds to start on a Chromecast.")
+                text: Cast.deviceId.startsWith("cc:") ? qsTr("Live channels take a few seconds to start on a Chromecast.")
+                                                      : qsTr("The TV may take a few seconds to start.")
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontSmall
             }

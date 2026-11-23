@@ -3,6 +3,15 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.2.3
+
+- **Casting to Samsung and other smart TVs:** Relay now asks the TV which kinds of video it
+  plays and describes the channel in the TV's own words. Samsung TVs showed *"An unexpected
+  error has occurred"* for live channels because of this.
+- **When a TV can't play something, Relay says so** and goes back to playing it here, instead
+  of waiting on "Starting…".
+- Relay's log now notes what the TV asked for and answered, which helps if a TV still refuses.
+
 ## 0.2.2
 
 - **Fixed: Relay closing by itself as it starts on some PCs.** Before your playlist finished

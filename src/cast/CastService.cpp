@@ -100,8 +100,28 @@ void CastService::start(const QString &deviceId, const QVariantMap &source)
 void CastService::begin(const QString &url, const QVariantMap &source)
 {
     if (!m_path.isEmpty()) m_relay->remove(m_path);
+    m_path.clear();
     const bool chromecast = m_device.kind == QLatin1String("chromecast");
     const QString mime = mimeFor(url, m_live);
+    if (chromecast) { serve(url, source, mime); return; }
+
+    if (!m_dlna) {
+        m_dlna = new DlnaRenderer(m_device, this);
+        connect(m_dlna, &DlnaRenderer::playing, this, [this] { setState(QStringLiteral("playing")); });
+        connect(m_dlna, &DlnaRenderer::failed, this, [this](const QString &problem) { finish(problem); });
+        connect(m_dlna, &DlnaRenderer::stopped, this, [this] { finish(QString()); });
+    }
+    // The name this TV uses for the type (Samsung is particular about it).
+    const quint64 generation = m_generation;
+    m_dlna->acceptedType(mime, [this, url, source, generation](const QString &type) {
+        if (generation != m_generation || !m_dlna) return;   // stopped or moved on meanwhile
+        serve(url, source, type);
+    });
+}
+
+void CastService::serve(const QString &url, const QVariantMap &source, const QString &mime)
+{
+    const bool chromecast = m_device.kind == QLatin1String("chromecast");
     const bool hlsSource = mime == QLatin1String("application/x-mpegurl");
 
     CastRelay::Source rs;
@@ -111,34 +131,28 @@ void CastService::begin(const QString &url, const QVariantMap &source)
     // Chromecast plays HLS, not a raw TS stream: live TS goes out as HLS.
     rs.asHls = chromecast && m_live && !hlsSource && mime == QLatin1String("video/mp2t");
     rs.contentType = mime;
+    if (!chromecast) {
+        rs.forceType = !hlsSource;   // the same type the TV was told
+        rs.dlnaFeatures = DlnaRenderer::features(m_live);
+    }
     m_path = m_relay->add(rs);
     if (m_path.isEmpty()) { finish(tr("Couldn't start sharing the stream on this computer")); return; }
     const QString castUrl = m_relay->urlFor(m_path, m_device.address);
     const double start = source.value(QStringLiteral("start")).toDouble();
     qInfo().noquote() << "Cast: serving" << castUrl;
 
-    auto onPlaying = [this] { setState(QStringLiteral("playing")); };
-    auto onFailed = [this](const QString &problem) { finish(problem); };
-    auto onStopped = [this] { finish(QString()); };
-
     if (chromecast) {
         if (!m_cc) {
             m_cc = new ChromecastClient(m_device, this);
-            connect(m_cc, &ChromecastClient::playing, this, onPlaying);
-            connect(m_cc, &ChromecastClient::failed, this, onFailed);
-            connect(m_cc, &ChromecastClient::stopped, this, onStopped);
+            connect(m_cc, &ChromecastClient::playing, this, [this] { setState(QStringLiteral("playing")); });
+            connect(m_cc, &ChromecastClient::failed, this, [this](const QString &problem) { finish(problem); });
+            connect(m_cc, &ChromecastClient::stopped, this, [this] { finish(QString()); });
         }
         const QString type = rs.asHls || hlsSource ? QStringLiteral("application/x-mpegurl")
                            : mime == QLatin1String("video/x-matroska") ? QStringLiteral("video/mp4")   // what it plays them as
                            : mime;
         m_cc->load(castUrl, m_title, type, m_live, m_live ? 0 : start);
     } else {
-        if (!m_dlna) {
-            m_dlna = new DlnaRenderer(m_device, this);
-            connect(m_dlna, &DlnaRenderer::playing, this, onPlaying);
-            connect(m_dlna, &DlnaRenderer::failed, this, onFailed);
-            connect(m_dlna, &DlnaRenderer::stopped, this, onStopped);
-        }
         if (!m_live) m_dlna->seekWhenPlaying(start);
         m_dlna->load(castUrl, m_title, mime, m_live);
     }
@@ -171,8 +185,7 @@ void CastService::finish(const QString &problem)
     if (!active()) return;
     ++m_generation;
     if (!problem.isEmpty()) {
-        qWarning().noquote() << "Cast:" << problem;
-        emit message(problem, true);
+        qWarning().noquote() << "Cast:" << problem;   // shown with ended()
     } else {
         qInfo().noquote() << "Cast: stopped";
     }
@@ -181,5 +194,5 @@ void CastService::finish(const QString &problem)
     m_relay->clear();
     m_path.clear();
     setState(QString());
-    emit ended();
+    emit ended(problem);
 }

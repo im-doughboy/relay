@@ -258,9 +258,10 @@ Window {
     Connections {
         target: Cast
         function onMessage(text, problem) { toast.show(text, problem) }
-        function onEnded() {
-            if (Player.vodActive) toast.show(qsTr("Casting stopped · Space plays it here"))
-            else { toast.show(qsTr("Casting stopped · back to watching here")); Player.retry() }
+        function onEnded(problem) {
+            const back = Player.vodActive ? qsTr("Space plays it here") : qsTr("back to watching here")
+            toast.show(problem ? problem + " · " + back : qsTr("Casting stopped · %1").arg(back), problem.length > 0)
+            if (!Player.vodActive) Player.retry()
         }
     }
     CastBar {

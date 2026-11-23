@@ -39,6 +39,8 @@ public:
         QString userAgent, referrer;
         bool asHls = false;        // live MPEG-TS -> HLS (Chromecast)
         QString contentType;       // what to say it is, when the provider doesn't
+        bool forceType = false;    // say contentType even when the provider says something (DLNA TVs)
+        QString dlnaFeatures;      // contentFeatures.dlna.org (DLNA TVs ask)
     };
     // The path (on this server) the receiver should play; starts the server.
     QString add(const Source &source);

@@ -28,6 +28,7 @@ struct CastDevice {
     QHostAddress address;
     quint16 port = 0;      // Chromecast
     QUrl controlUrl;       // DLNA AVTransport
+    QUrl connectionUrl;    // DLNA ConnectionManager (what the TV can play)
     QVariantMap toMap() const;
 };
 
@@ -81,6 +82,10 @@ class DlnaRenderer : public QObject
 
 public:
     DlnaRenderer(const CastDevice &device, QObject *parent = nullptr);
+    // Asks the TV which types it plays (ConnectionManager GetProtocolInfo,
+    // once) and gives the name it uses for `mime` (Samsung: MPEG-TS is
+    // video/vnd.dlna.mpeg-tts, not video/mp2t); `mime` when it doesn't say.
+    void acceptedType(const QString &mime, std::function<void(const QString &)> done);
     void load(const QString &url, const QString &title, const QString &mime, bool live);
     void play();
     void pause();
@@ -89,7 +94,11 @@ public:
     // Stops the TV, then deletes itself once the TV has answered.
     void stopAndDelete();
     static QByteArray didl(const QString &url, const QString &title, const QString &mime, bool live);
-    static QByteArray soapBody(const QString &action, const QString &args);
+    static QByteArray soapBody(const QString &action, const QString &args, const char *service = nullptr);
+    // DLNA.ORG_OP/CI/FLAGS: a live stream can't be sought; a file can (bytes).
+    static QString features(bool live);
+    // From the TV's Sink list ("http-get:*:video/mpeg:*,..."): what it calls `mime`.
+    static QString pickType(const QString &sink, const QString &mime);
 
 signals:
     void playing();
@@ -97,13 +106,18 @@ signals:
     void stopped();
 
 private:
-    void call(const QString &action, const QString &args, std::function<void(bool, const QByteArray &)> done = {});
+    void call(const QString &action, const QString &args, std::function<void(bool, const QByteArray &)> done = {},
+              const QUrl &url = QUrl(), const char *service = nullptr);
     void pollState();
     CastDevice m_device;
     QNetworkAccessManager *m_net;
     QTimer m_poll;
     bool m_started = false;
     double m_seekOnStart = 0;
+    int m_stoppedPolls = 0;
+    QString m_lastState;
+    bool m_askedTypes = false;
+    QString m_sink;   // what the TV said it plays
 public:
     void seekWhenPlaying(double secs) { m_seekOnStart = secs; }
 };
