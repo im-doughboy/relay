@@ -67,6 +67,8 @@ add_library(relay_core STATIC
     src/app/Updater.h             src/app/Updater.cpp
     src/app/RemoteInput.h         src/app/RemoteInput.cpp
     src/app/Gamepads.h            src/app/Gamepads.cpp
+    src/app/PhoneRemote.h         src/app/PhoneRemote.cpp
+    src/third_party/qrcodegen/qrcodegen.hpp src/third_party/qrcodegen/qrcodegen.cpp
     src/cast/TsSegmenter.h        src/cast/TsSegmenter.cpp
     src/cast/CastRelay.h          src/cast/CastRelay.cpp
     src/cast/HlsJoiner.h          src/cast/HlsJoiner.cpp
@@ -95,6 +97,10 @@ target_link_libraries(relay_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::Quick Qt6::Network Qt6::Concurrent Qt6::OpenGL Qt6::Sql
     ZLIB::ZLIB mpv_lib)
 # System credential store for the playlist login (SecretStore).
+# The phone remote's page.
+set_source_files_properties(src/web/remote.html PROPERTIES QT_RESOURCE_ALIAS remote.html)
+qt_add_resources(relay_core "relay_web" PREFIX "/web" FILES src/web/remote.html)
+
 # Game controllers (Xbox, PlayStation, Switch…) through SDL2; without it Relay
 # builds, but doesn't see controllers.
 if(PkgConfig_FOUND)

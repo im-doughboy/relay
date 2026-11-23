@@ -465,6 +465,20 @@ Limits: casting uses the provider's own stream, so channels with H.265 or MPEG-2
 on devices that support them (most TVs do; older Chromecasts don't). Subtitles and audio track
 choices aren't sent to the TV.
 
+## Remotes, game controllers and your phone
+
+- **TV-style PC remotes** (air-mouse and Android-TV-style USB remotes, media keys): OK, Back,
+  Home (back to live TV), Menu (the right-click menu), Guide, Info, Search, Favorites,
+  Subtitles, Audio, play/pause, rewind/forward, channel up/down and volume all work as they are.
+- **Game controllers** (Xbox, PlayStation, Switch and others, by cable or Bluetooth): D-pad or
+  left stick to move, A OK, B back, X menu, Y guide, LB/RB back/forward 30 seconds, LT/RT a
+  page at a time, right stick volume, Start play/pause, View what's on, the Xbox/PS button home.
+  Relay only listens while it's the app in front.
+- **Phone remote:** Settings → Phone remote: on. Scan the QR code with the phone's camera (or
+  open the address shown), enter the four-digit code once, and the phone is a remote: no app to
+  install. Only phones on your home network that know the code can use it; Settings can forget
+  paired phones (which also changes the code).
+
 ## Updates
 
 Relay checks GitHub for a newer release a minute after it starts and then once a day (Settings →
@@ -737,6 +751,11 @@ The Windows download includes other people's open-source work, each under its ow
 here), [FFmpeg](https://ffmpeg.org/legal.html) (GPL as built here), and the
 libraries MSYS2 builds them with. Their source is available from those projects and from
 [MSYS2](https://packages.msys2.org).
+
+QR codes for the phone remote are made with Project Nayuki's
+[QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) (MIT license, in
+`src/third_party/qrcodegen`). Game controllers are read with [SDL2](https://www.libsdl.org)
+(zlib license).
 
 Movie and series details and images come from [TMDB](https://www.themoviedb.org). This product
 uses the TMDB API but is not endorsed or certified by TMDB. Trakt is a trademark of Trakt, Inc.;

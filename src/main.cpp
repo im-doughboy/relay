@@ -6,6 +6,7 @@
 #include "app/Updater.h"
 #include "app/RemoteInput.h"
 #include "app/Gamepads.h"
+#include "app/PhoneRemote.h"
 #include "cast/CastService.h"
 #include "app/UserLibrary.h"
 #include "app/Parental.h"
@@ -215,6 +216,7 @@ int main(int argc, char *argv[])
     app.installEventFilter(remote);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Remote", remote);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Gamepads", new Gamepads(remote, &app));
+    qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Phone", new PhoneRemote(remote, &app));
     auto *cast = new CastService(&app);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Cast", cast);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Catchup", catchup);

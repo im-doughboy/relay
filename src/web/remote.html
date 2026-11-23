@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0B0D12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Relay remote</title>
+<style>
+  :root {
+    --bg: #0B0D12; --panel: #161A22; --raised: #1F2430; --border: #2A3040;
+    --text: #F2F4F8; --muted: #8A93A6; --accent: #F2A33A; --accent-text: #1A1206; --danger: #F06A6A;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; user-select: none; -webkit-user-select: none; }
+  body { display: flex; justify-content: center; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+  main { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 14px; }
+  header { display: flex; align-items: center; gap: 10px; }
+  .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; }
+  .logo svg { width: 16px; height: 16px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  .now { margin-left: auto; color: var(--muted); font-size: 13px; text-align: right; max-width: 60%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border);
+    border-radius: 14px; min-height: 56px; display: flex; align-items: center; justify-content: center; gap: 8px;
+    touch-action: manipulation; cursor: pointer; transition: transform .06s, background .1s; }
+  button:active, button.pressed { transform: scale(.96); background: #2B3242; }
+  button svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .row { display: grid; gap: 10px; }
+  .r3 { grid-template-columns: repeat(3, 1fr); }
+  .r4 { grid-template-columns: repeat(4, 1fr); }
+  .small { font-size: 13px; color: var(--muted); flex-direction: column; gap: 4px; min-height: 64px; }
+  .small svg { width: 20px; height: 20px; }
+  .pad { position: relative; aspect-ratio: 1; width: min(100%, 300px); margin: 6px auto; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--border); touch-action: none; }
+  .pad button { position: absolute; border: none; background: transparent; min-height: 0; border-radius: 12px; }
+  .pad button:active, .pad button.pressed { background: #ffffff14; }
+  .pad .up    { top: 4%;  left: 33%; width: 34%; height: 26%; }
+  .pad .down  { bottom: 4%; left: 33%; width: 34%; height: 26%; }
+  .pad .left  { left: 4%; top: 33%; width: 26%; height: 34%; }
+  .pad .right { right: 4%; top: 33%; width: 26%; height: 34%; }
+  .pad .ok { top: 33%; left: 33%; width: 34%; height: 34%; border-radius: 50%; background: var(--accent); color: var(--accent-text);
+    font-weight: 700; font-size: 17px; }
+  .pad .ok:active, .pad .ok.pressed { background: #FFB95C; }
+  .pad svg { width: 28px; height: 28px; }
+  .rocker { display: grid; grid-template-rows: 1fr auto 1fr; border-radius: 14px; background: var(--raised);
+    border: 1px solid var(--border); overflow: hidden; }
+  .rocker button { border: none; border-radius: 0; background: transparent; min-height: 52px; }
+  .rocker span { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }
+  .media { grid-template-columns: 1fr 1fr 1fr; }
+  .accent { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 650; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+  .card p { margin: 0; color: var(--muted); }
+  input { font: 600 28px/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing: 12px; text-align: center;
+    width: 100%; padding: 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  input:focus { outline: 2px solid var(--accent); }
+  .error { color: var(--danger); min-height: 1.3em; font-size: 14px; }
+  .hidden { display: none !important; }
+  .status { text-align: center; color: var(--muted); font-size: 13px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo"><svg viewBox="0 0 24 24" fill="#1A1206"><path d="M7 5v14l11-7z"/></svg></div>
+    <h1>Relay</h1>
+    <div class="now" id="now"></div>
+  </header>
+
+  <section class="card hidden" id="pair">
+    <h1>Pair this phone</h1>
+    <p>Enter the code shown in Relay under Settings → Phone remote.</p>
+    <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" placeholder="····">
+    <div class="error" id="err"></div>
+    <button class="accent" id="pairBtn">Pair</button>
+  </section>
+
+  <section id="remote" class="hidden" style="display:flex;flex-direction:column;gap:14px">
+    <div class="row r4">
+      <button class="small" data-a="home"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
+      <button class="small" data-a="guide"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>Guide</button>
+      <button class="small" data-a="movies"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>Movies</button>
+      <button class="small" data-a="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Search</button>
+    </div>
+
+    <div class="pad" id="pad">
+      <button class="up" data-a="up" data-repeat><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+      <button class="left" data-a="left" data-repeat><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <button class="ok" data-a="ok">OK</button>
+      <button class="right" data-a="right" data-repeat><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+      <button class="down" data-a="down" data-repeat><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+    </div>
+
+    <div class="row r3">
+      <button data-a="back"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>Back</button>
+      <button data-a="info"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>Info</button>
+      <button data-a="menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Menu</button>
+    </div>
+
+    <div class="row" style="grid-template-columns: 1fr 2fr 1fr">
+      <div class="rocker">
+        <button data-a="volup" data-repeat><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        <span>VOL</span>
+        <button data-a="voldown" data-repeat><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      </div>
+      <div class="row" style="grid-template-rows: 1fr 1fr">
+        <div class="row media">
+          <button data-a="rewind"><svg viewBox="0 0 24 24"><path d="M11 6L4 12l7 6zM20 6l-7 6 7 6z"/></svg></button>
+          <button data-a="playpause" class="accent"><svg viewBox="0 0 24 24"><path d="M7 5v14l11-7z"/></svg></button>
+          <button data-a="forward"><svg viewBox="0 0 24 24"><path d="M13 6l7 6-7 6zM4 6l7 6-7 6z"/></svg></button>
+        </div>
+        <div class="row media">
+          <button data-a="mute"><svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4zM22 9l-6 6M16 9l6 6"/></svg></button>
+          <button data-a="captions"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 10.5a2 2 0 1 0 0 3M17 10.5a2 2 0 1 0 0 3"/></svg></button>
+          <button data-a="multiview"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/></svg></button>
+        </div>
+      </div>
+      <div class="rocker">
+        <button data-a="chup"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+        <span>CH</span>
+        <button data-a="chdown"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
+    </div>
+    <div class="status" id="status"></div>
+  </section>
+</main>
+<script>
+(() => {
+  const KEY = "relay-token";
+  let token = "";
+  try { token = localStorage.getItem(KEY) || ""; } catch (e) {}
+  const $ = (id) => document.getElementById(id);
+  const show = (paired) => { $("pair").classList.toggle("hidden", paired); $("remote").classList.toggle("hidden", !paired); };
+  const status = (t) => { $("status").textContent = t || ""; };
+
+  async function state() {
+    try {
+      const r = await fetch("/state", { headers: { "X-Relay-Token": token }, cache: "no-store" });
+      const s = await r.json();
+      show(s.paired);
+      $("now").textContent = s.paired ? (s.now || "") : "";
+      status("");
+    } catch (e) { status("Can't reach Relay. Is it open on the computer?"); }
+  }
+
+  async function send(action) {
+    if (navigator.vibrate) navigator.vibrate(8);
+    try {
+      const r = await fetch("/a/" + action, { method: "POST", headers: { "X-Relay-Token": token } });
+      if (r.status === 403) { show(false); return; }
+      status("");
+    } catch (e) { status("Can't reach Relay. Is it open on the computer?"); }
+  }
+
+  async function pair() {
+    const code = $("code").value.trim();
+    $("err").textContent = "";
+    try {
+      const r = await fetch("/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+      if (!r.ok) { $("err").textContent = await r.text(); return; }
+      token = (await r.json()).token;
+      try { localStorage.setItem(KEY, token); } catch (e) {}
+      $("code").value = "";
+      state();
+    } catch (e) { $("err").textContent = "Can't reach Relay."; }
+  }
+  $("pairBtn").addEventListener("click", pair);
+  $("code").addEventListener("input", () => { if ($("code").value.length === 4) pair(); });
+
+  // Buttons press on touch-down; arrows and volume repeat while held.
+  // The pad decides on lift instead: a tap is its button, a swipe is a direction.
+  document.querySelectorAll("[data-a]").forEach((b) => {
+    const onPad = !!b.closest(".pad");
+    let timer = null, from = null, repeated = false, swiped = false;
+    const stopTimer = () => { clearTimeout(timer); clearInterval(timer); timer = null; };
+    b.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      b.setPointerCapture && b.setPointerCapture(e.pointerId);
+      b.classList.add("pressed");
+      from = { x: e.clientX, y: e.clientY }; repeated = false; swiped = false;
+      if (!onPad) send(b.dataset.a);
+      if (b.hasAttribute("data-repeat"))
+        timer = setTimeout(() => { repeated = true; if (onPad) send(b.dataset.a); timer = setInterval(() => send(b.dataset.a), 120); }, 420);
+    });
+    b.addEventListener("pointermove", (e) => {
+      if (!onPad || !from || swiped) return;
+      if (Math.hypot(e.clientX - from.x, e.clientY - from.y) > 30) { swiped = true; stopTimer(); }
+    });
+    b.addEventListener("pointerup", (e) => {
+      stopTimer();
+      b.classList.remove("pressed");
+      if (onPad && from && !repeated) {
+        const dx = e.clientX - from.x, dy = e.clientY - from.y;
+        send(swiped ? (Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up")) : b.dataset.a);
+      }
+      from = null;
+    });
+    b.addEventListener("pointercancel", () => { stopTimer(); b.classList.remove("pressed"); from = null; });
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+
+  state();
+  setInterval(state, 4000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) state(); });
+})();
+</script>
+</body>
+</html>

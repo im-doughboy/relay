@@ -16,6 +16,7 @@
 #include "app/Updater.h"
 #include "app/RemoteInput.h"
 #include "app/Gamepads.h"
+#include "app/PhoneRemote.h"
 #ifdef RELAY_HAVE_SDL
 # define SDL_MAIN_HANDLED
 # include <SDL.h>
@@ -1963,6 +1964,68 @@ private slots:
         SDL_JoystickDetachVirtual(index);
         QTRY_VERIFY(pads.connected().isEmpty());
 #endif
+    }
+
+    // The phone remote: page, pairing, buttons; unpaired phones can't press anything.
+    void phone_remote()
+    {
+        QVERIFY(PhoneRemote::isLocal(QHostAddress("192.168.0.20")));
+        QVERIFY(PhoneRemote::isLocal(QHostAddress("::ffff:10.1.2.3")));
+        QVERIFY(PhoneRemote::isLocal(QHostAddress("127.0.0.1")));
+        QVERIFY(!PhoneRemote::isLocal(QHostAddress("8.8.8.8")));
+        const QVariantMap q = PhoneRemote::qr("http://192.168.0.231:8800");
+        QVERIFY(q.value("size").toInt() >= 21);
+        QCOMPARE(q.value("modules").toString().size(), q.value("size").toInt() * q.value("size").toInt());
+
+        QSettings().remove("phone");
+        RemoteInput remote;
+        PhoneRemote phone(&remote);
+        QVERIFY(!phone.running());   // off until it's turned on
+        phone.setEnabled(true);
+        QVERIFY(phone.running());
+        QCOMPARE(phone.code().size(), 4);
+        phone.setNowShowing("4791 · Take the Lead");
+        const QString base = QStringLiteral("http://127.0.0.1:%1").arg(phone.port());
+        QNetworkAccessManager net;
+        auto call = [&](const QByteArray &method, const QString &path, const QByteArray &body = {}, const QByteArray &token = {}) {
+            QNetworkRequest req{QUrl(base + path)};
+            if (!token.isEmpty()) req.setRawHeader("X-Relay-Token", token);
+            if (!body.isEmpty()) req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            QNetworkReply *r = net.sendCustomRequest(req, method, body);
+            QSignalSpy done(r, &QNetworkReply::finished);
+            done.wait(5000);
+            r->deleteLater();
+            return qMakePair(r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), r->readAll());
+        };
+        auto page = call("GET", "/");
+        QCOMPARE(page.first, 200);
+        QVERIFY(page.second.contains("Pair this phone"));
+        QCOMPARE(call("POST", "/a/guide").first, 403);                       // not paired
+        QCOMPARE(call("POST", "/pair", "{\"code\":\"nope\"}").first, 403);    // wrong code
+        auto paired = call("POST", "/pair", QJsonDocument(QJsonObject{{"code", phone.code()}}).toJson());
+        QCOMPARE(paired.first, 200);
+        const QByteArray token = QJsonDocument::fromJson(paired.second).object().value("token").toString().toLatin1();
+        QVERIFY(token.size() >= 32);
+        QCOMPARE(phone.paired(), 1);
+        auto state = call("GET", "/state", {}, token);
+        QVERIFY(state.second.contains("\"paired\":true"));
+        QVERIFY(state.second.contains("Take the Lead"));
+        QSignalSpy actions(&remote, &RemoteInput::action);
+        QCOMPARE(call("POST", "/a/guide", {}, token).first, 204);
+        QCOMPARE(actions.count(), 1);
+        QCOMPARE(actions.first().first().toString(), QString("guide"));
+        QCOMPARE(call("POST", "/a/format-disk", {}, token).first, 400);     // only Relay's buttons
+        // Forgetting phones: the token stops working, and the code changes.
+        const QString oldCode = phone.code();
+        phone.forgetPhones();
+        QCOMPARE(call("POST", "/a/guide", {}, token).first, 403);
+        QVERIFY(phone.code() != oldCode || phone.code().size() == 4);
+        // Five wrong codes: a new code, and a minute's wait.
+        for (int i = 0; i < 5; ++i) call("POST", "/pair", "{\"code\":\"x\"}");
+        QCOMPARE(call("POST", "/pair", QJsonDocument(QJsonObject{{"code", phone.code()}}).toJson()).first, 429);
+        phone.setEnabled(false);
+        QVERIFY(!phone.running());
+        QSettings().remove("phone");
     }
 
     void cast_relay()

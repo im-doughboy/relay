@@ -1012,6 +1012,114 @@ FocusScope {
             }
         }
 
+        // Remotes, game controllers and the phone remote
+        Column {
+            width: card.width
+            spacing: 8
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: qsTr("Remotes and controllers: TV-style PC remotes and media keys work as they are (OK, Back, Home, Menu, Guide…).") + " "
+                      + (!Gamepads.available ? qsTr("This copy of Relay was built without game controller support.")
+                         : Gamepads.connected.length ? qsTr("Controller connected: %1.").arg(Gamepads.connected.join(", "))
+                         : qsTr("Game controllers (Xbox, PlayStation, Switch) work when connected, by cable or Bluetooth."))
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+            }
+            Text {
+                visible: Gamepads.available
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: qsTr("Controller: A OK · B back · X menu · Y guide · LB/RB back/forward 30 s · LT/RT page · right stick volume · Start play/pause · View what's on · Xbox/PS button home")
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSmall
+            }
+            Row {
+                spacing: 8
+                topPadding: 4
+                ActionButton {
+                    text: Phone.enabled ? qsTr("Phone remote: on") : qsTr("Phone remote: off")
+                    primary: Phone.enabled
+                    onClicked: Phone.enabled = !Phone.enabled
+                }
+                ActionButton {
+                    visible: Phone.paired > 0
+                    text: qsTr("Forget paired phones (%1)").arg(Phone.paired)
+                    onClicked: Phone.forgetPhones()
+                }
+            }
+            Text {
+                visible: !Phone.enabled
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: qsTr("Use a phone on the same Wi-Fi as a remote: no app to install, it opens in the phone's browser.")
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSmall
+            }
+            Row {
+                visible: Phone.running
+                spacing: 20
+                topPadding: 6
+                // Scan with the phone's camera.
+                Rectangle {
+                    width: 152; height: 152
+                    radius: 8
+                    color: "white"
+                    visible: Phone.url.length > 0
+                    Canvas {
+                        id: qrCanvas
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        property var code: Phone.url.length ? Phone.qr(Phone.url) : null
+                        onCodeChanged: requestPaint()
+                        onPaint: {
+                            const ctx = getContext("2d")
+                            ctx.reset()
+                            if (!code) return
+                            const n = code.size, cell = width / n
+                            ctx.fillStyle = "#000000"
+                            for (let y = 0; y < n; ++y)
+                                for (let x = 0; x < n; ++x)
+                                    if (code.modules[y * n + x] === "1")
+                                        ctx.fillRect(Math.floor(x * cell), Math.floor(y * cell), Math.ceil(cell), Math.ceil(cell))
+                        }
+                    }
+                }
+                Column {
+                    spacing: 6
+                    width: card.width - 172
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: Phone.url.length ? qsTr("Scan the code with the phone's camera, or open %1 in its browser.").arg(Phone.url)
+                                               : qsTr("This computer isn't on a home network right now.")
+                        color: Theme.text
+                        font.pixelSize: Theme.fontBody - 1
+                    }
+                    Text {
+                        text: qsTr("Pairing code")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                    }
+                    Text {
+                        text: Phone.code.split("").join(" ")
+                        color: Theme.accent
+                        font.pixelSize: Theme.fontLarge + 8
+                        font.weight: Font.DemiBold
+                        font.family: "monospace"
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Only phones on your home network that know this code can use it. If Windows asks whether Relay may use the network, allow private networks.")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                    }
+                }
+            }
+        }
+
         // Updates
         Column {
             id: updatesBox

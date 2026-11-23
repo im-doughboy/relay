@@ -815,6 +815,17 @@ Window {
         onMultiViewRequested: (globalIndex) => { channelPanel.close(); win.openMultiViewWith(globalIndex) }
     }
 
+    // What the phone remote shows at the top.
+    Binding {
+        target: Phone
+        property: "nowShowing"
+        value: Player.vodActive ? (Player.vod.title || "")
+             : Player.hasChannel ? Player.currentName + (Player.nowProgram.title ? " · " + Player.nowProgram.title : "") : ""
+    }
+    Connections {
+        target: Phone
+        function onPhonePaired() { toast.show(qsTr("Phone paired · it's a remote now")) }
+    }
     // Remote buttons with a meaning of their own (remotes, controllers, the
     // phone). Most become the key the user has for them.
     Connections {
