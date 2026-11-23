@@ -197,6 +197,10 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   showing). **M** mutes, **H** shows the keys again.
 - **Esc**, **F** or **Q** goes back to normal viewing on the selected channel; double-clicking
   a tile does the same.
+- **Movies and episodes** can go in a tile too: **Multi-view** on a movie's or series' page, or
+  the multi-view button while one plays (it carries on from where it was). **Space** pauses the
+  selected movie, **⏪ / ⏩** (LB / RB) skip 30 seconds, and leaving multi-view on it carries on
+  full screen. Its place is kept in Continue watching.
 - Each tile is a separate stream. Many providers limit how many streams an account can play at
   once; tiles that the server refuses show the reason.
 
@@ -483,17 +487,19 @@ choices aren't sent to the TV.
   Home (back to live TV), Menu (the right-click menu), Guide, Info, Search, Favorites,
   Subtitles, Audio, play/pause, rewind/forward, channel up/down and volume all work as they are.
 - **Game controllers** (Xbox, PlayStation, Switch and others, by cable or Bluetooth): D-pad or
-  left stick to move, A OK, B back, X menu, Y guide, LB/RB back/forward 30 seconds, LT/RT a
-  page at a time, right stick volume, Start play/pause, View what's on, the Xbox/PS button home.
-  Relay only listens while it's the app in front.
+  left stick to move, A OK, B back, X menu, Y guide, LB/RB back/forward 30 seconds (in Movies &
+  series: the tab before / after), LT/RT a page at a time, right stick volume, Start play/pause,
+  View what's on, the Xbox/PS button home. Relay only listens while it's the app in front.
 - **Phone remote:** Settings → Phone remote: on. Scan the QR code with the phone's camera (or
   open the address shown), enter the four-digit code once, and the phone is a remote: no app to
   install. Only phones on your home network that know the code can use it; Settings can forget
-  paired phones (which also changes the code).
+  paired phones (which also changes the code). Whenever a text box in Relay has the keyboard
+  (search, an address, a name), the phone shows a box to type into with its own keyboard;
+  **Type** opens Relay's search.
 
 ## Updates
 
-Relay checks GitHub for a newer release a minute after it starts and then once a day (Settings →
+Relay checks GitHub for a newer release shortly after it starts and then every six hours (Settings →
 Updates turns this off, and **Check now** checks straight away). When there's one, a card in the
 bottom-right corner offers it: **Update now** downloads the installer, checks it against the size
 and SHA-256 GitHub lists for it, and runs it quietly; Relay closes, updates in place and opens

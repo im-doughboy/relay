@@ -1343,7 +1343,7 @@ FocusScope {
                     wrapMode: Text.Wrap
                     text: qsTr("Updates: this is Relay %1.").arg(Updates.currentVersion) + " "
                           + (Updates.available ? qsTr("Relay %1 is available.").arg(Updates.latestVersion)
-                             : Updates.autoCheck ? qsTr("Relay checks for a new version once a day and asks before installing it.")
+                             : Updates.autoCheck ? qsTr("Relay checks for a new version when it starts and every six hours, and asks before installing it.")
                              : qsTr("Checking for new versions is off."))
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSmall

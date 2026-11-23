@@ -167,7 +167,7 @@ void PhoneRemote::stop()
 void PhoneRemote::reply(QTcpSocket *socket, int status, const QByteArray &type, const QByteArray &body)
 {
     const QByteArray text = status == 200 ? "OK" : status == 204 ? "No Content" : status == 403 ? "Forbidden"
-                          : status == 429 ? "Too Many Requests" : status == 400 ? "Bad Request" : "Not Found";
+                          : status == 429 ? "Too Many Requests" : status == 400 ? "Bad Request" : status == 409 ? "Conflict" : "Not Found";
     QByteArray h = "HTTP/1.1 " + QByteArray::number(status) + ' ' + text + "\r\n";
     if (!type.isEmpty()) h += "Content-Type: " + type + "\r\n";
     h += "Content-Length: " + QByteArray::number(body.size()) + "\r\n"
@@ -189,7 +189,10 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
     if (method == "GET" && path == QLatin1String("/state")) {
         const bool ok = tokenValid(token);
         QJsonObject o{{QStringLiteral("paired"), ok}};
-        if (ok) o.insert(QStringLiteral("now"), m_nowShowing);
+        if (ok) {
+            o.insert(QStringLiteral("now"), m_nowShowing);
+            o.insert(QStringLiteral("field"), QJsonObject::fromVariantMap(RemoteInput::fieldState()));
+        }
         reply(socket, 200, "application/json", QJsonDocument(o).toJson(QJsonDocument::Compact));
         return;
     }
@@ -229,6 +232,14 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
         if (!RemoteInput::actions().contains(action)) { reply(socket, 400, "text/plain", "Unknown button."); return; }
         emit m_remote->used(QStringLiteral("phone"));
         m_remote->trigger(action);
+        reply(socket, 204, QByteArray(), QByteArray());
+        return;
+    }
+    if (method == "POST" && path == QLatin1String("/text")) {
+        if (!tokenValid(token)) { reply(socket, 403, "text/plain", "Pair this phone first."); return; }
+        const QJsonValue text = QJsonDocument::fromJson(body).object().value(QLatin1String("text"));
+        if (!text.isString()) { reply(socket, 400, "text/plain", "No text."); return; }
+        if (!m_remote->setFieldText(text.toString())) { reply(socket, 409, "text/plain", "Nothing to type into."); return; }
         reply(socket, 204, QByteArray(), QByteArray());
         return;
     }

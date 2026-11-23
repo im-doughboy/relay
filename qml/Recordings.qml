@@ -103,6 +103,11 @@ FocusScope {
 
     visible: opened
     Keys.onEscapePressed: close()
+    // LB / RB: Series before, Movies after (round).
+    Keys.onPressed: (e) => {
+        if (e.key === Qt.Key_AudioRewind) { moviesRequested(1); e.accepted = true }
+        else if (e.key === Qt.Key_AudioForward) { moviesRequested(0); e.accepted = true }
+    }
 
     Rectangle {
         anchors.fill: parent

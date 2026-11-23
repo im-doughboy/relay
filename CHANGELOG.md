@@ -3,6 +3,31 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.3.2
+
+- **Type from your phone:** when a search or other text box is open in Relay, the phone remote
+  shows a box to type in with your phone's keyboard, and **Enter** sends it. The new **Type**
+  button opens Relay's search to get you started.
+- **LB / RB switch tabs** in Movies & series: Movies, Series and Recordings, round and round
+  (⏪ / ⏩ on the phone or a remote do the same there).
+- **Movies and episodes in multi-view:** a **Multi-view** button on a movie's or series' page
+  puts it in a tile next to your channels, and the multi-view button while a movie plays now
+  keeps it playing in a tile. Space pauses the selected movie, LB / RB skip back and ahead, and
+  **Watch full screen** carries on with it from where it got to. Its place is kept in Continue
+  watching.
+- **Casting, more reliable:**
+  - Chromecast (and TVs with Chromecast built in, like LG): each piece of the stream now starts on
+    a full picture, which TVs need to begin playing; when the provider drops the channel, Relay
+    reconnects and tells the TV to carry on; and if the TV gives up on a live channel, Relay
+    starts it again on the TV.
+  - DLNA TVs (Samsung and others): a live channel uses one connection to the provider however
+    many times the TV asks for it (many providers allow only one), starts on a full picture, and
+    keeps going when the provider drops and Relay reconnects.
+  - The log says more about what the TV did, and less about every piece it fetched.
+- **Updates:** Relay checks when it starts and then every six hours (it was once a day).
+- Fixed: on Linux and macOS, Relay ignored Ctrl+C and the system's request to quit while a game
+  controller library was loaded.
+
 ## 0.3.1
 
 - **Settings, reorganized:** a list of sections on the left (Playlist, TV guide, Playback &

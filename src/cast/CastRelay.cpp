@@ -18,6 +18,8 @@ namespace {
 constexpr quint16 kFirstPort = 8790;
 constexpr qint64 kSocketHighWater = 4 * 1024 * 1024;
 constexpr qint64 kWaitForSegmentsMs = 25000;
+constexpr qint64 kListenerHighWater = 24 * 1024 * 1024;   // a TV this far behind has stopped reading
+constexpr int kRequestsLogged = 6;                       // per stream; problems are always logged
 
 QString newToken()
 {
@@ -94,12 +96,14 @@ QString CastRelay::add(const Source &source)
     const QString token = newToken();
     Entry e;
     e.source = source;
-    if (source.asHls) e.segmenter = std::make_shared<TsSegmenter>();
+    if (source.asHls || source.shareLive) e.segmenter = std::make_shared<TsSegmenter>();
     m_entries.insert(token, e);
     if (source.asHls) {
         startFeed(token);
         return QStringLiteral("/h/%1/live.m3u8").arg(token);
     }
+    // Started now: by the time the TV asks, there's a key frame to start it on.
+    if (source.shareLive) startFeed(token);
     // Some TVs (Samsung) go by how the address ends.
     const QString type = source.contentType;
     const QString ext = type.contains(QLatin1String("mp4")) ? QStringLiteral(".mp4")
@@ -116,14 +120,24 @@ void CastRelay::remove(const QString &path)
     if (parts.size() < 2) return;
     auto it = m_entries.find(parts[1]);
     if (it == m_entries.end()) return;
-    if (it->feed) it->feed->abort();
+    closeListeners(*it);
+    if (QNetworkReply *f = it->feed) { it->feed = nullptr; f->abort(); }   // stopped, not dropped
     m_entries.erase(it);
+}
+
+void CastRelay::closeListeners(Entry &e)
+{
+    for (const QPointer<QTcpSocket> &l : std::as_const(e.listeners))
+        if (l) l->disconnectFromHost();
+    e.listeners.clear();
 }
 
 void CastRelay::clear()
 {
-    for (auto it = m_entries.begin(); it != m_entries.end(); ++it)
-        if (it->feed) it->feed->abort();
+    for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+        closeListeners(*it);
+        if (QNetworkReply *f = it->feed) { it->feed = nullptr; f->abort(); }
+    }
     m_entries.clear();
     m_waiting.clear();
     m_waitTimer.stop();
@@ -221,17 +235,25 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
         const int colon = lines[i].indexOf(':');
         if (colon > 0) headers.insert(lines[i].left(colon).trimmed().toLower(), lines[i].mid(colon + 1).trimmed());
     }
-    // What the receiver asks for (says why a TV gives up), without the address.
-    qInfo().noquote() << QStringLiteral("Cast: %1 %2 asks %3 /%4%5%6").arg(socket->peerAddress().toString(),
-                             QString::fromLatin1(headers.value("user-agent").left(60)), QString::fromLatin1(method),
-                             path.section(QLatin1Char('/'), 1, 1),
-                             headers.contains("range") ? QStringLiteral(" range ") + QString::fromLatin1(headers.value("range")) : QString(),
-                             headers.contains("getcontentfeatures.dlna.org") ? QStringLiteral(" +dlna features") : QString());
+    const QStringList parts = path.split(QLatin1Char('?')).first().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    const bool known = parts.size() >= 3 && m_entries.contains(parts[1]);
+    // What the receiver asks for (says why a TV gives up), without the token:
+    // the first few requests of each stream, and anything unexpected.
+    int *logged = known ? &m_entries[parts[1]].logged : nullptr;
+    if (!logged || (*logged)++ < kRequestsLogged)
+        qInfo().noquote() << QStringLiteral("Cast: %1 %2 asks %3 /%4/%5%6%7").arg(socket->peerAddress().toString(),
+                                 QString::fromLatin1(headers.value("user-agent").left(40)), QString::fromLatin1(method),
+                                 parts.value(0), parts.value(2),
+                                 headers.contains("range") ? QStringLiteral(" range ") + QString::fromLatin1(headers.value("range")) : QString(),
+                                 headers.contains("getcontentfeatures.dlna.org") ? QStringLiteral(" +dlna features") : QString());
     if (method == "OPTIONS") { reply(socket, 200, QByteArray(), QByteArray()); return; }
     if (method != "GET" && method != "HEAD") { reply(socket, 404, "text/plain", "no"); return; }
 
-    const QStringList parts = path.split(QLatin1Char('?')).first().split(QLatin1Char('/'), Qt::SkipEmptyParts);
-    if (parts.size() < 3 || !m_entries.contains(parts[1])) { reply(socket, 404, "text/plain", "not found", method); return; }
+    if (!known) {
+        qWarning().noquote() << "Cast: asked for a stream that isn't being cast:" << parts.value(0) << parts.value(2);
+        reply(socket, 404, "text/plain", "not found", method);
+        return;
+    }
     const QString token = parts[1];
     Entry &e = m_entries[token];
 
@@ -249,12 +271,16 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
             return;
         }
         const QByteArray seg = e.segmenter->segment(parts[2].section(QLatin1Char('.'), 0, 0).toInt());
-        if (seg.isEmpty()) reply(socket, 404, "text/plain", "gone", method);
+        if (seg.isEmpty()) {
+            qWarning().noquote() << "Cast: the receiver asked for segment" << parts[2] << "which is gone (it fell behind)";
+            reply(socket, 404, "text/plain", "gone", method);
+        }
         else reply(socket, 200, "video/mp2t", seg, method);
         return;
     }
     if (parts[0] == QLatin1String("s")) {                       // the stream itself
         if (e.source.joinHls) serveJoined(socket, e.source, method, headers);
+        else if (e.source.shareLive) serveShared(socket, token, method, headers);
         else pipe(socket, token, e.source.url, method, headers);
         return;
     }
@@ -368,6 +394,27 @@ void CastRelay::serveJoined(QTcpSocket *socket, const Source &source, const QByt
     joiner->start();
 }
 
+// ---- live MPEG-TS, one provider connection for all the TV's requests ------------------------------
+
+void CastRelay::serveShared(QTcpSocket *socket, const QString &token, const QByteArray &method,
+                            const QHash<QByteArray, QByteArray> &headers)
+{
+    // TVs often ask two or three times (a look, then the real thing, sometimes
+    // overlapping): one connection to the provider for all of them, since many
+    // providers allow just one, and it carries on if the provider drops it.
+    Entry &e = m_entries[token];
+    QByteArray h = "HTTP/1.1 200 OK\r\n";
+    h += commonHeaders(headers, e.source.dlnaFeatures);
+    h += "Content-Type: " + (e.source.contentType.isEmpty() ? QByteArray("video/mp2t") : e.source.contentType.toUtf8()) + "\r\n";
+    h += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    socket->write(h);
+    if (method == "HEAD") { socket->disconnectFromHost(); return; }
+    if (!e.feed && e.feedFailures > 5) { e.feedFailures = 0; startFeed(token); }   // it had given up: try again for this request
+    // From the newest key frame, then live.
+    socket->write(e.segmenter->joinData());
+    e.listeners.append(QPointer<QTcpSocket>(socket));
+}
+
 // ---- live MPEG-TS -> HLS -----------------------------------------------------------------------
 
 void CastRelay::startFeed(const QString &token)
@@ -381,22 +428,63 @@ void CastRelay::startFeed(const QString &token)
     QNetworkReply *feed = m_net->get(req);
     it->feed = feed;
     std::shared_ptr<TsSegmenter> seg = it->segmenter;
-    connect(feed, &QNetworkReply::readyRead, this, [this, feed, seg, token] {
-        seg->feed(feed->readAll());
-        // Flowing again: a later drop gets the full number of retries.
+    const qint64 began = QDateTime::currentMSecsSinceEpoch();
+    connect(feed, &QNetworkReply::metaDataChanged, this, [this, feed, token] {
+        const int status = feed->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status >= 300 && status < 400) return;
         auto e = m_entries.find(token);
-        if (e != m_entries.end() && e->feedFailures > 0 && seg->segments().size() > 1) e->feedFailures = 0;
+        if (e == m_entries.end() || e->feed != feed) return;
+        if (status >= 400) qWarning().noquote() << "Cast: the provider answered" << status << "for the channel";
+        // Not MPEG-TS after all, but an HLS playlist: a TV gets it joined into one stream.
+        if (e->source.shareLive && looksLikePlaylist(feed->header(QNetworkRequest::ContentTypeHeader).toByteArray(), feed->url())) {
+            qInfo().noquote() << "Cast: the channel is HLS; passing it on as one MPEG-TS stream";
+            e->source.shareLive = false;
+            e->source.joinHls = true;
+            e->source.url = feed->url().toString();
+            e->feed = nullptr;
+            closeListeners(*e);
+            feed->abort();
+        }
+    });
+    connect(feed, &QNetworkReply::readyRead, this, [this, feed, seg, token] {
+        const QByteArray data = feed->readAll();
+        if (feed->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() >= 400) return;   // an error page, not video
+        seg->feed(data);
+        auto e = m_entries.find(token);
+        if (e == m_entries.end()) return;
+        for (int i = int(e->listeners.size()) - 1; i >= 0; --i) {
+            QTcpSocket *l = e->listeners.at(i);
+            if (!l || l->state() != QAbstractSocket::ConnectedState) { e->listeners.removeAt(i); continue; }
+            if (l->bytesToWrite() > kListenerHighWater) {
+                qWarning().noquote() << "Cast: the TV stopped reading; letting that request go";
+                l->abort();
+                e->listeners.removeAt(i);
+                continue;
+            }
+            l->write(data);
+        }
         if (!m_waiting.isEmpty()) answerWaiting();
     });
-    connect(feed, &QNetworkReply::finished, this, [this, feed, token] {
+    connect(feed, &QNetworkReply::finished, this, [this, feed, seg, token, began] {
         feed->deleteLater();
         auto e = m_entries.find(token);
         if (e == m_entries.end() || e->feed != feed) return;   // stopped
-        // Live streams shouldn't end: connect again, a few times.
+        e->feed = nullptr;
+        // Live streams shouldn't end: connect again, a few times. The next
+        // piece starts on a key frame and the playlist marks the break.
         const bool failed = feed->error() != QNetworkReply::NoError;
-        qWarning().noquote() << "Cast: the channel's stream" << (failed ? "failed: " + feed->errorString() : QStringLiteral("ended"));
-        if (++e->feedFailures > 5) return;
-        QTimer::singleShot(1000 * e->feedFailures, this, [this, token] { startFeed(token); });
+        const qint64 lasted = (QDateTime::currentMSecsSinceEpoch() - began) / 1000;
+        seg->discontinuity();
+        if (lasted >= 30) e->feedFailures = 0;   // it had been flowing: a fresh set of tries
+        if (++e->feedFailures > 5) {
+            qWarning().noquote() << "Cast: the provider keeps closing the channel; giving up";
+            closeListeners(*e);
+            return;
+        }
+        qWarning().noquote() << QStringLiteral("Cast: the provider %1 after %2 s; connecting again")
+                                    .arg(failed ? QStringLiteral("closed the channel (%1)").arg(feed->errorString()) : QStringLiteral("ended the channel"))
+                                    .arg(lasted);
+        QTimer::singleShot(500 * e->feedFailures, this, [this, token] { startFeed(token); });
     });
 }
 
@@ -413,7 +501,10 @@ void CastRelay::answerWaiting()
             reply(w.socket, 200, src.forceType && !src.contentType.isEmpty() ? src.contentType.toUtf8() : QByteArray("application/vnd.apple.mpegurl"),
                   list, "GET", src.dlnaFeatures);
         }
-        else if (it == m_entries.constEnd() || now - w.since > kWaitForSegmentsMs) reply(w.socket, 503, "text/plain", "not ready");
+        else if (it == m_entries.constEnd() || now - w.since > kWaitForSegmentsMs) {
+            qWarning().noquote() << "Cast: no video from the provider yet; told the receiver to wait";
+            reply(w.socket, 503, "text/plain", "not ready");
+        }
         else continue;
         m_waiting.removeAt(i);
     }

@@ -56,6 +56,13 @@
   input { font: 600 28px/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing: 12px; text-align: center;
     width: 100%; padding: 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   input:focus { outline: 2px solid var(--accent); }
+  .r5 { grid-template-columns: repeat(5, 1fr); }
+  #typing { gap: 10px; padding: 16px; }
+  #typing label { font-size: 13px; color: var(--muted); }
+  #typing input { font: 18px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: normal;
+    text-align: left; padding: 12px 14px; user-select: text; -webkit-user-select: text; }
+  #typing .row { grid-template-columns: 1fr 2fr; }
+  #typing button { min-height: 46px; }
   .error { color: var(--danger); min-height: 1.3em; font-size: 14px; }
   .hidden { display: none !important; }
   .status { text-align: center; color: var(--muted); font-size: 13px; min-height: 1.2em; }
@@ -78,7 +85,19 @@
   </section>
 
   <section id="remote" class="hidden" style="display:flex;flex-direction:column;gap:14px">
-    <div class="row r4">
+    <section class="card hidden" id="typing">
+      <label for="text" id="textHint">Type in Relay</label>
+      <form id="textForm" autocomplete="off">
+        <input id="text" type="text" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Type here">
+      </form>
+      <div class="row">
+        <button type="button" id="clearText">Clear</button>
+        <button type="button" class="accent" id="enterText">Enter</button>
+      </div>
+    </section>
+
+    <div class="row r5">
+      <button class="small" id="typeBtn"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>Type</button>
       <button class="small" data-a="home"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
       <button class="small" data-a="guide"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>Guide</button>
       <button class="small" data-a="movies"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>Movies</button>
@@ -135,12 +154,46 @@
   const show = (paired) => { $("pair").classList.toggle("hidden", paired); $("remote").classList.toggle("hidden", !paired); };
   const status = (t) => { $("status").textContent = t || ""; };
 
+  // Typing: a box appears while a text box in Relay has the keyboard.
+  let typing = false, sendTimer = null;
+  function showField(f) {
+    const on = !!(f && f.typing);
+    const box = $("text");
+    if (on && (!typing || document.activeElement !== box)) {
+      box.type = f.secret ? "password" : "text";
+      if (document.activeElement !== box) box.value = f.text || "";
+      $("textHint").textContent = f.hint ? "Typing in Relay: " + f.hint : "Typing in Relay";
+    }
+    if (!on && typing && document.activeElement === box) box.blur();
+    typing = on;
+    $("typing").classList.toggle("hidden", !on);
+  }
+  async function sendText() {
+    clearTimeout(sendTimer); sendTimer = null;
+    try {
+      const r = await fetch("/text", { method: "POST", headers: { "X-Relay-Token": token, "Content-Type": "application/json" },
+                                       body: JSON.stringify({ text: $("text").value }) });
+      if (r.status === 403) { show(false); return; }
+      if (r.status === 409) { showField(null); status("Nothing to type into in Relay any more"); return; }
+      status("");
+    } catch (e) { status("Can't reach Relay. Is it open on the computer?"); }
+  }
+  $("text").addEventListener("input", () => { clearTimeout(sendTimer); sendTimer = setTimeout(sendText, 150); });
+  $("textForm").addEventListener("submit", async (e) => { e.preventDefault(); await sendText(); send("ok"); });
+  $("enterText").addEventListener("click", async () => { await sendText(); send("ok"); });
+  $("clearText").addEventListener("click", () => { $("text").value = ""; sendText(); $("text").focus(); });
+  $("typeBtn").addEventListener("click", () => {
+    if (typing) { $("text").focus(); return; }
+    send("search");   // opens Relay's search; the box appears with it
+  });
+
   async function state() {
     try {
       const r = await fetch("/state", { headers: { "X-Relay-Token": token }, cache: "no-store" });
       const s = await r.json();
       show(s.paired);
       $("now").textContent = s.paired ? (s.now || "") : "";
+      showField(s.paired ? s.field : null);
       status("");
     } catch (e) { status("Can't reach Relay. Is it open on the computer?"); }
   }
@@ -151,6 +204,8 @@
       const r = await fetch("/a/" + action, { method: "POST", headers: { "X-Relay-Token": token } });
       if (r.status === 403) { show(false); return; }
       status("");
+      clearTimeout(send.later);
+      send.later = setTimeout(state, 300);   // did a text box open or close?
     } catch (e) { status("Can't reach Relay. Is it open on the computer?"); }
   }
 
@@ -202,7 +257,7 @@
   });
 
   state();
-  setInterval(state, 4000);
+  setInterval(() => { if (!document.hidden) state(); }, 2000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) state(); });
 })();
 </script>

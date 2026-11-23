@@ -5,6 +5,8 @@
 #include <QHash>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QQuickItem>
+#include <QQuickWindow>
 #include <QWindow>
 
 namespace {
@@ -109,4 +111,48 @@ bool RemoteInput::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QObject::eventFilter(watched, event);
+}
+
+// ---- typing from the phone -----------------------------------------------------------------------
+
+QObject *RemoteInput::focusedField()
+{
+    auto isField = [](QObject *o) {
+        return o && (o->inherits("QQuickTextInput") || o->inherits("QQuickTextEdit")) && !o->property("readOnly").toBool();
+    };
+    // The window in front first, then any (the phone works while Relay is behind other windows).
+    QList<QWindow *> windows;
+    if (QWindow *w = QGuiApplication::focusWindow()) windows << w;
+    for (QWindow *w : QGuiApplication::topLevelWindows()) if (!windows.contains(w) && w->isVisible()) windows << w;
+    for (QWindow *w : std::as_const(windows)) {
+        auto *qw = qobject_cast<QQuickWindow *>(w);
+        if (!qw) continue;
+        QQuickItem *item = qw->activeFocusItem();
+        if (isField(item) && item->isVisible()) return item;
+    }
+    return nullptr;
+}
+
+QVariantMap RemoteInput::fieldState()
+{
+    QObject *f = focusedField();
+    if (!f) return {{QStringLiteral("typing"), false}};
+    const bool secret = f->property("echoMode").toInt() != 0;   // TextInput.Normal is 0
+    QString hint = f->property("placeholderText").toString();
+    if (hint.isEmpty()) hint = f->property("accessibleName").toString();
+    return {{QStringLiteral("typing"), true},
+            {QStringLiteral("text"), secret ? QString() : f->property("text").toString()},
+            {QStringLiteral("hint"), hint},
+            {QStringLiteral("secret"), secret}};
+}
+
+bool RemoteInput::setFieldText(const QString &textIn)
+{
+    QObject *f = focusedField();
+    if (!f) return false;
+    const QString text = textIn.left(500);
+    f->setProperty("text", text);
+    f->setProperty("cursorPosition", int(text.size()));
+    emit used(QStringLiteral("phone"));
+    return true;
 }

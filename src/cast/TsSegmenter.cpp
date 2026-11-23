@@ -5,6 +5,7 @@
 namespace {
 constexpr int kPacket = 188;
 constexpr double kMaxWithoutKeyFrame = 10.0;   // cut anyway (some streams never flag key frames)
+constexpr double kMaxWaitForKey = 6.0;         // start without one after this long
 
 int pidOf(const char *p) { return ((uchar(p[1]) & 0x1F) << 8) | uchar(p[2]); }
 bool payloadStart(const char *p) { return uchar(p[1]) & 0x40; }
@@ -44,6 +45,48 @@ void TsSegmenter::finish()
     if (!m_current.isEmpty()) close(qMax(0.5, m_pcrSinceCut));
 }
 
+void TsSegmenter::discontinuity()
+{
+    // Whatever was half built belongs to the old connection.
+    if (!m_current.isEmpty() && m_pcrSinceCut >= 1.0) close(m_pcrSinceCut);
+    m_current.clear();
+    m_pending.clear();
+    m_pat.clear();
+    m_pmt.clear();
+    m_pmtPid = m_videoPid = -1;
+    m_lastPcr = -1;
+    m_pcrSinceCut = 0;
+    m_waitForKey = true;
+    m_waitedPcr = 0;
+    if (!m_segments.isEmpty()) m_nextIsBreak = true;
+}
+
+bool TsSegmenter::keyFrameInPayload(const char *p, int streamType)
+{
+    int off = payloadOffset(p);
+    if (off < 0 || off + 9 > kPacket) return false;
+    const uchar *b = reinterpret_cast<const uchar *>(p);
+    if (b[off] != 0 || b[off + 1] != 0 || b[off + 2] != 1) return false;   // not a PES start
+    off += 9 + b[off + 8];                                                  // past the PES header
+    for (int i = off; i + 3 < kPacket; ++i) {
+        if (b[i] != 0 || b[i + 1] != 0 || b[i + 2] != 1) continue;
+        const uchar n = b[i + 3];
+        if (streamType == 0x1B) {                 // H.264
+            const int t = n & 0x1F;
+            if (t == 5 || t == 7) return true;    // IDR slice, SPS
+            if (t >= 1 && t <= 4) return false;   // a slice of another frame
+        } else if (streamType == 0x24) {          // HEVC
+            const int t = (n >> 1) & 0x3F;
+            if ((t >= 16 && t <= 21) || t == 32 || t == 33) return true;   // IRAP, VPS, SPS
+            if (t <= 9) return false;
+        } else {                                  // MPEG-1/2
+            if (n == 0xB3) return true;           // sequence header
+            if (n == 0x00) return false;          // a picture without one
+        }
+        i += 3;
+    }
+    return false;
+}
 void TsSegmenter::parsePat(const char *p)
 {
     const int off = payloadOffset(p);
@@ -105,21 +148,35 @@ void TsSegmenter::packet(const char *p)
         if (m_lastPcr >= 0) {
             double step = pcr - m_lastPcr;
             if (step < -5 || step > 5) step = 0;         // a jump (wrap, new programme): don't count it
-            if (step > 0) m_pcrSinceCut += step;
+            if (step > 0) { m_pcrSinceCut += step; if (m_waitForKey) m_waitedPcr += step; }
         }
         m_lastPcr = pcr;
     }
+    const bool frameStart = pid == m_videoPid && payloadStart(p);
     if (keyFrame && pid == m_videoPid) m_sawKeyFrameFlag = true;
+    // Many IPTV streams never set the flag: look at the video itself.
+    if (frameStart && !keyFrame && keyFrameInPayload(p, m_videoType)) {
+        keyFrame = true;
+        m_sawKeyFrameInVideo = true;
+    }
+    const bool knowsKeys = m_sawKeyFrameFlag || m_sawKeyFrameInVideo;
 
     // Cut before a video packet that starts a frame, once the segment is long enough.
-    if (pid == m_videoPid && payloadStart(p) && !m_current.isEmpty()) {
-        const bool longEnough = m_pcrSinceCut >= m_target;
-        const bool atKey = keyFrame || !m_sawKeyFrameFlag;
+    if (frameStart && !m_current.isEmpty()) {
+        const bool longEnough = m_pcrSinceCut >= m_target - 0.5;   // the clock runs a little ahead of the video
+        const bool atKey = keyFrame || !knowsKeys;
         if ((longEnough && atKey) || m_pcrSinceCut >= kMaxWithoutKeyFrame) close(m_pcrSinceCut);
     }
     if (m_current.isEmpty()) {
         if (m_pat.isEmpty() || m_pmt.isEmpty()) return;  // can't start a segment without them
-        if (m_videoPid >= 0 && !(pid == m_videoPid && payloadStart(p))) return;   // start on a frame
+        if (m_videoPid >= 0 && !frameStart) return;      // start on a frame
+        // The first segment (and the first after a break) on a key frame,
+        // so the receiver's decoder has what it needs to start.
+        if (m_waitForKey && m_videoPid >= 0) {
+            if (!keyFrame && m_waitedPcr < kMaxWaitForKey) return;
+            m_waitForKey = false;
+            m_pcrSinceCut = 0;
+        }
         m_current.reserve(2 * 1024 * 1024);
         m_current.append(m_pat);
         m_current.append(m_pmt);
@@ -129,8 +186,12 @@ void TsSegmenter::packet(const char *p)
 
 void TsSegmenter::close(double duration)
 {
-    m_segments.append({m_nextSequence++, duration, m_current});
-    while (m_segments.size() > m_keep) m_segments.removeFirst();
+    m_segments.append({m_nextSequence++, duration, m_current, m_nextIsBreak});
+    m_nextIsBreak = false;
+    while (m_segments.size() > m_keep) {
+        if (m_segments.size() > 1 && m_segments.at(1).discontinuity) ++m_discontinuitySequence;   // the break scrolls off
+        m_segments.removeFirst();
+    }
     m_current.clear();
     m_pcrSinceCut = 0;
 }
@@ -143,10 +204,22 @@ QByteArray TsSegmenter::playlist(const QString &prefix, int minimum) const
     QByteArray out = "#EXTM3U\n#EXT-X-VERSION:3\n";
     out += "#EXT-X-TARGETDURATION:" + QByteArray::number(int(std::ceil(longest))) + "\n";
     out += "#EXT-X-MEDIA-SEQUENCE:" + QByteArray::number(m_segments.first().sequence) + "\n";
-    for (const Segment &s : m_segments) {
+    if (m_discontinuitySequence > 0) out += "#EXT-X-DISCONTINUITY-SEQUENCE:" + QByteArray::number(m_discontinuitySequence) + "\n";
+    for (int i = 0; i < m_segments.size(); ++i) {
+        const Segment &s = m_segments.at(i);
+        if (s.discontinuity && i > 0) out += "#EXT-X-DISCONTINUITY\n";
         out += "#EXTINF:" + QByteArray::number(s.duration, 'f', 3) + ",\n";
         out += prefix.toUtf8() + QByteArray::number(s.sequence) + ".ts\n";
     }
+    return out;
+}
+
+QByteArray TsSegmenter::joinData() const
+{
+    QByteArray out;
+    if (!m_segments.isEmpty()) out = m_segments.last().data;
+    out += m_current;
+    out += m_pending;   // the start of a packet whose rest comes next
     return out;
 }
 

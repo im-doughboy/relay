@@ -71,5 +71,6 @@ private:
     QString m_castUrl;
     QVariantMap m_castSource;
     bool m_triedHls = false;
+    int m_recoveries = 0;      // a live channel the Chromecast dropped, started again
     quint64 m_generation = 0;
 };

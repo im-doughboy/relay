@@ -79,6 +79,7 @@ void CastService::start(const QString &deviceId, const QVariantMap &source)
     m_device = it.value();
     m_title = source.value(QStringLiteral("title")).toString();
     m_live = source.value(QStringLiteral("live")).toBool();
+    m_recoveries = 0;
     const quint64 gen = ++m_generation;
     setState(QStringLiteral("connecting"));
     qInfo().noquote() << QStringLiteral("Cast: \"%1\" to %2 \"%3\"").arg(m_title, m_device.kind, m_device.name);
@@ -162,6 +163,8 @@ void CastService::serve(const QString &url, const QVariantMap &source, const QSt
     rs.asHls = makeHls || (chromecast && m_live && !hlsSource && mime == QLatin1String("video/mp2t"));
     rs.contentType = mime;
     rs.joinHls = joinHls;
+    // A live channel on a TV: one provider connection, however many times the TV asks.
+    rs.shareLive = !chromecast && m_live && !hlsSource && !joinHls && !makeHls;
     if (!chromecast) {
         rs.forceType = !hlsSource;   // the same type the TV was told
         rs.dlnaFeatures = DlnaRenderer::features(m_live);
@@ -176,7 +179,17 @@ void CastService::serve(const QString &url, const QVariantMap &source, const QSt
         if (!m_cc) {
             m_cc = new ChromecastClient(m_device, this);
             connect(m_cc, &ChromecastClient::playing, this, [this] { setState(QStringLiteral("playing")); });
-            connect(m_cc, &ChromecastClient::failed, this, [this](const QString &problem) { finish(problem); });
+            connect(m_cc, &ChromecastClient::failed, this, [this](const QString &problem) {
+                // A live channel that was playing: start it again (a hiccup from
+                // the provider shouldn't end the evening), a few times.
+                if (m_live && m_state == QLatin1String("playing") && m_recoveries < 3) {
+                    ++m_recoveries;
+                    qWarning().noquote() << "Cast:" << problem << "· starting the channel again on the TV";
+                    begin(m_castUrl, m_castSource);
+                    return;
+                }
+                finish(problem);
+            });
             connect(m_cc, &ChromecastClient::stopped, this, [this] { finish(QString()); });
         }
         const QString type = rs.asHls || hlsSource ? QStringLiteral("application/x-mpegurl")

@@ -1699,6 +1699,168 @@ private slots:
         QVERIFY(TsSegmenter().playlist(QString()).isEmpty());
     }
 
+    // A synthetic H.264 stream whose broadcaster never sets the random-access
+    // flag: key frames only show in the video (SPS + IDR), every `gop` frames.
+    static QByteArray h264Stream(int frames, int gop, int firstFrame = 0, qint64 clockStart = 0)
+    {
+        auto pkt = [](int pid, bool start, int cc, const QByteArray &adapt, const QByteArray &payload) {
+            QByteArray p(188, char(0xFF));
+            p[0] = 0x47;
+            p[1] = char((start ? 0x40 : 0) | ((pid >> 8) & 0x1F));
+            p[2] = char(pid & 0xFF);
+            int pos = 4;
+            if (!adapt.isEmpty()) {
+                p[3] = char(0x30 | (cc & 0xF));
+                p[4] = char(adapt.size());
+                for (int i = 0; i < adapt.size(); ++i) p[5 + i] = adapt[i];
+                pos = 5 + int(adapt.size());
+            } else {
+                p[3] = char(0x10 | (cc & 0xF));
+            }
+            for (int i = 0; i < payload.size() && pos + i < 188; ++i) p[pos + i] = payload[i];
+            return p;
+        };
+        auto pcrField = [](qint64 t) {
+            QByteArray a(7, '\0');
+            a[0] = 0x10;   // PCR, no random-access flag
+            a[1] = char(t >> 25); a[2] = char(t >> 17); a[3] = char(t >> 9);
+            a[4] = char(t >> 1); a[5] = char(((t & 1) << 7) | 0x7E); a[6] = 0;
+            return a;
+        };
+        const QByteArray pat = QByteArray::fromHex("00" "00b00d0001c100000001f0000000000000");
+        const QByteArray pmt = QByteArray::fromHex("00" "02b0170001c10000e100f000" "1be100f000" "0fe101f000" "00000000");
+        const QByteArray pes = QByteArray::fromHex("000001e000008080052100010001");   // PES header with a PTS
+        QByteArray out;
+        for (int i = firstFrame; i < firstFrame + frames; ++i) {
+            if (i % 25 == firstFrame % 25) { out += pkt(0, true, i, {}, pat); out += pkt(0x1000, true, i, {}, pmt); }
+            const bool key = i % gop == 0;
+            const QByteArray nal = key ? QByteArray::fromHex("0000000109f0" "00000001674d4028" "0000000168ee3c80" "0000000165888400")
+                                       : QByteArray::fromHex("0000000109f0" "00000001419a0000");
+            out += pkt(0x100, true, i, pcrField(clockStart + qint64(i - firstFrame) * 3600), pes + nal);
+            out += pkt(0x101, true, i, {}, QByteArray(20, 'a'));
+        }
+        return out;
+    }
+
+    void ts_key_frames_and_breaks()
+    {
+        // Key frames found in the video itself; the first segment waits for one.
+        const QByteArray sps = QByteArray::fromHex("67");
+        TsSegmenter seg(4.0, 8);
+        const QByteArray stream = h264Stream(25 * 20, 50, 13);   // starts mid-GOP, a key frame every 2 s
+        for (int at = 0; at < stream.size(); at += 777) seg.feed(stream.mid(at, 777));
+        QVERIFY(seg.segments().size() >= 3);
+        for (const auto &s : seg.segments()) {
+            QVERIFY2(s.duration >= 3.9 && s.duration <= 4.1, qPrintable(QString::number(s.duration)));   // whole GOPs
+            QVERIFY(TsSegmenter::keyFrameInPayload(s.data.constData() + 376, 0x1B));   // after PAT, PMT: a key frame
+            QVERIFY(!s.discontinuity);
+        }
+        QVERIFY(!seg.playlist(QString()).contains("DISCONTINUITY"));
+        QVERIFY(seg.joinData().startsWith(seg.segments().last().data.left(188)));
+
+        // The provider drops and a new connection starts its clock elsewhere:
+        // the break is marked, and the next segment starts on a key frame again.
+        const int before = int(seg.segments().size());
+        seg.feed(QByteArray(100, 0x47));   // half a packet from the old connection
+        seg.discontinuity();
+        const QByteArray again = h264Stream(25 * 12, 50, 7, 90000LL * 5000);
+        for (int at = 0; at < again.size(); at += 1000) seg.feed(again.mid(at, 1000));
+        const auto &list = seg.segments();
+        int breaks = 0;
+        for (const auto &s : list) {
+            if (s.discontinuity) ++breaks;
+            QVERIFY(TsSegmenter::keyFrameInPayload(s.data.constData() + 376, 0x1B));
+        }
+        QCOMPARE(breaks, 1);
+        QVERIFY(list.size() > 1 && int(list.size()) <= 8);
+        QVERIFY(seg.playlist(QString()).contains("#EXT-X-DISCONTINUITY\n"));
+        Q_UNUSED(before);
+        // Once the break has scrolled off, the playlist counts it.
+        const QByteArray more = h264Stream(25 * 40, 50, 0, 90000LL * 9000);
+        for (int at = 0; at < more.size(); at += 1000) seg.feed(more.mid(at, 1000));
+        const QByteArray later = seg.playlist(QString());
+        QVERIFY(!later.contains("#EXT-X-DISCONTINUITY\n"));
+        QVERIFY(later.contains("#EXT-X-DISCONTINUITY-SEQUENCE:1\n"));
+
+        // Not key frames: other slices, and data that isn't a frame start.
+        const QByteArray s1 = h264Stream(2, 50, 1);                       // frame 1: a P slice
+        QVERIFY(!TsSegmenter::keyFrameInPayload(s1.constData() + 2 * 188, 0x1B));
+        Q_UNUSED(sps);
+    }
+
+    void cast_shared_live()
+    {
+        // A live channel for a TV: one provider connection however many times
+        // the TV asks, each answer starting on a key frame, and when the
+        // provider drops the channel, Relay connects again and the TV carries on.
+        QTcpServer provider;
+        QVERIFY(provider.listen(QHostAddress::LocalHost));
+        int connections = 0;
+        connect(&provider, &QTcpServer::newConnection, this, [&] {
+            QTcpSocket *s = provider.nextPendingConnection();
+            ++connections;
+            const int n = connections;
+            connect(s, &QTcpSocket::readyRead, s, [s, n] {
+                if (!s->readAll().contains("\r\n\r\n") || s->property("going").toBool()) return;
+                s->setProperty("going", true);
+                s->write("HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nConnection: close\r\n\r\n");
+                // Eight seconds of video, sent quickly, a bit at a time.
+                auto data = std::make_shared<QByteArray>(h264Stream(25 * 8, 50, n * 3, qint64(n) * 90000 * 1000));
+                auto *t = new QTimer(s);
+                QObject::connect(t, &QTimer::timeout, s, [s, data, t, n] {
+                    s->write(data->left(20 * 188));
+                    data->remove(0, 20 * 188);
+                    if (data->isEmpty()) { t->stop(); if (n == 1) s->disconnectFromHost(); }   // the first one drops
+                });
+                t->start(5);
+            });
+        });
+        CastRelay relay;
+        CastRelay::Source tv;
+        tv.url = QStringLiteral("http://127.0.0.1:%1/live/u/p/9.ts").arg(provider.serverPort());
+        tv.contentType = QStringLiteral("video/vnd.dlna.mpeg-tts");
+        tv.forceType = true;
+        tv.dlnaFeatures = DlnaRenderer::features(true);
+        tv.shareLive = true;
+        const QString path = relay.add(tv);
+        QVERIFY(path.endsWith(".ts"));
+        QTRY_COMPARE_WITH_TIMEOUT(connections, 1, 3000);      // started before the TV asks
+
+        QNetworkAccessManager net;
+        const QUrl url(relay.urlFor(path, QHostAddress::LocalHost));
+        QNetworkRequest head(url);
+        QNetworkReply *h = net.head(head);
+        QTRY_VERIFY_WITH_TIMEOUT(h->isFinished(), 5000);
+        QCOMPARE(h->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+        QCOMPARE(h->header(QNetworkRequest::ContentTypeHeader).toString(), QStringLiteral("video/vnd.dlna.mpeg-tts"));
+        h->deleteLater();
+
+        QTest::qWait(400);   // a segment's worth arrives
+        auto got1 = std::make_shared<QByteArray>(), got2 = std::make_shared<QByteArray>();
+        QNetworkReply *a = net.get(QNetworkRequest(url));
+        connect(a, &QNetworkReply::readyRead, a, [a, got1] { got1->append(a->readAll()); });
+        QTest::qWait(100);
+        QNetworkReply *b = net.get(QNetworkRequest(url));                   // the TV asks again, overlapping
+        connect(b, &QNetworkReply::readyRead, b, [b, got2] { got2->append(b->readAll()); });
+        QTRY_VERIFY_WITH_TIMEOUT(got1->size() > 188 * 3 && got2->size() > 188 * 3, 5000);
+        QCOMPARE(connections, 1);                                           // still one connection to the provider
+        // Both start with PAT, PMT and a key frame.
+        for (const auto &g : {got1, got2}) {
+            QCOMPARE(uchar(g->at(0)), uchar(0x47));
+            QCOMPARE((uchar(g->at(1)) & 0x1F) << 8 | uchar(g->at(2)), 0);
+            QVERIFY(TsSegmenter::keyFrameInPayload(g->constData() + 376, 0x1B));
+        }
+        // The provider drops the channel: Relay connects again, the TV's answer goes on.
+        QTRY_COMPARE_WITH_TIMEOUT(connections, 2, 8000);
+        const qint64 sizeAtReconnect = got1->size();
+        QTRY_VERIFY_WITH_TIMEOUT(got1->size() > sizeAtReconnect + 188 * 50, 5000);
+        QVERIFY(a->isRunning());
+        relay.clear();
+        QTRY_VERIFY_WITH_TIMEOUT(a->isFinished() && b->isFinished(), 3000);
+        a->deleteLater();
+        b->deleteLater();
+    }
+
     void cast_devices()
     {
         // mDNS: a Chromecast answering the _googlecast._tcp question.

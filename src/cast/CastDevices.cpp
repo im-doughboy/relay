@@ -707,6 +707,7 @@ void ChromecastClient::onMessage(const Message &m)
     }
     if (m.ns == QLatin1String(kNsMedia)) {
         if (type == QLatin1String("LOAD_FAILED") || type == QLatin1String("LOAD_CANCELLED") || type == QLatin1String("INVALID_REQUEST")) {
+            qWarning().noquote() << "Cast: the Chromecast said" << type << QString::fromUtf8(m.payload).left(200);
             emit failed(tr("The Chromecast couldn't play this stream"));
             return;
         }
@@ -715,12 +716,21 @@ void ChromecastClient::onMessage(const Message &m)
             const QJsonObject s = v.toObject();
             m_mediaSession = s.value(QLatin1String("mediaSessionId")).toInt(m_mediaSession);
             const QString state = s.value(QLatin1String("playerState")).toString();
+            const QString reason = s.value(QLatin1String("idleReason")).toString();
+            const QString said = reason.isEmpty() ? state : state + QLatin1Char(' ') + reason;
+            if (!state.isEmpty() && said != m_lastState) {
+                m_lastState = said;
+                qInfo().noquote() << "Cast: the Chromecast is" << said.toLower();
+            }
             if (state == QLatin1String("PLAYING") && !m_sawPlaying) { m_sawPlaying = true; emit playing(); }
             if (state == QLatin1String("IDLE") && m_sawPlaying) {
-                const QString reason = s.value(QLatin1String("idleReason")).toString();
-                if (reason == QLatin1String("ERROR")) emit failed(tr("The Chromecast stopped with an error"));
-                else emit stopped();
+                const bool live = m_pendingLoad.value(QLatin1String("media")).toObject().value(QLatin1String("streamType")).toString() == QLatin1String("LIVE");
                 m_sawPlaying = false;
+                if (reason == QLatin1String("ERROR")) emit failed(tr("The Chromecast stopped with an error"));
+                // A live channel doesn't finish: the stream stalled.
+                else if (live && reason == QLatin1String("FINISHED")) emit failed(tr("The channel stopped on the TV"));
+                else emit stopped();
+                continue;
             }
             if (state == QLatin1String("IDLE") && !m_sawPlaying && s.value(QLatin1String("idleReason")).toString() == QLatin1String("ERROR"))
                 emit failed(tr("The Chromecast couldn't play this stream"));

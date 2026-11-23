@@ -59,14 +59,14 @@ Window {
     }
     // Q: several channels at once. The main picture stops so its connection
     // is free for the tiles (many providers limit connections).
-    function openMultiView() {
-        if (!Player.hasChannel) return
+    function openMultiView(withoutChannel) {
+        if (!Player.hasChannel && !withoutChannel) return
         channelPanel.close(); guide.close(); search.close(); infoBar.hide()
         shortcuts.opened = false
         win.playbackError = ""
         video.stop()
         pip.close()                      // its connection is needed for tiles too
-        multiView.open(Player.currentIndex)
+        multiView.open(Player.hasChannel ? Player.currentIndex : -1)
     }
     // Multi-view with this channel next to the one on now (channel list,
     // right-click). Up to four: a full set swaps out the last tile.
@@ -143,16 +143,26 @@ Window {
                                { title: d.kind === "episode" ? d.seriesTitle : d.title,
                                  poster: d.kind === "episode" ? d.seriesPoster : d.poster })
     }
-    // Multi-view from a movie or episode: it keeps its place (Continue
-    // watching), and live channels open in tiles.
+    // Multi-view from a movie or episode: it goes on in a tile, from where
+    // it got to, next to the live channels.
     function multiViewFromVod() {
         if (!Player.vodActive) { openMultiView(); return }
-        const kind = Player.vod.kind
+        const d = Player.vod
+        const kind = d.kind
+        const at = video.position
         if (kind === "movie" || kind === "episode") saveVodProgress()
         win.playbackError = ""
         Player.stopVod()
         vodBrowser.close(); recordings.close()
-        openMultiView()
+        openMultiView(true)
+        if (kind === "movie" || kind === "episode" || kind === "recording") multiView.addVod(d, at)
+    }
+    // From a movie's or series' page: in a tile, from where you'd resume.
+    function multiViewWithVod(d) {
+        if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
+        vodBrowser.close(); recordings.close()
+        openMultiView(true)
+        multiView.addVod(d, d.start || 0)
     }
     // Catch-up of the show on now, from its beginning.
     function watchFromStart() {
@@ -833,6 +843,7 @@ Window {
         function onAction(name) {
             if (name === "home") { win.goHome(); return }
             if (name === "menu") { win.openMenu(); return }
+            if (name === "search" && vodBrowser.opened && !win.showSetup) { vodBrowser.focusSearch(); return }
             if (name === "favorites") {
                 if (win.showSetup) return
                 channelPanel.open()
@@ -897,6 +908,7 @@ Window {
         onClosed: if (!recordings.opened) win.returnFocus()
         onMessage: (text) => toast.show(text)
         onPlayRequested: (d) => Player.playVod(d)
+        onMultiViewRequested: (d) => win.multiViewWithVod(d)
         onRecordingsRequested: win.openRecordings(0)
         onPinRequested: (reason, ok) => win.requestPin(reason, ok)
     }
@@ -923,6 +935,7 @@ Window {
             win.returnFocus()
             if (gi >= 0) Player.tune(gi, gi === Player.currentIndex ? Player.zapGroup : -1)
         }
+        onVodChosen: (d) => Player.playVod(d)
     }
 
     PlaylistPicker {

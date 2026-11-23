@@ -20,6 +20,7 @@ FocusScope {
     property int selected: 0
     property var mainVideo                 // for volume and mute
     signal closed(int globalIndex)         // channel to carry on watching (-1: none)
+    signal vodChosen(var descriptor)       // a movie or episode to carry on watching full screen
     signal message(string text)
     signal pinRequested(string reason, var onOk)
 
@@ -37,11 +38,19 @@ FocusScope {
     readonly property int tileCount: tiles.count
 
     function isActive(pid) { return pid === Settings.activeId }
+    // Movies and episodes in tiles: pid "vod", the key finds the descriptor here.
+    property var vodItems: ({})
+    function isVod(pid) { return pid === "vod" }
+    function vodKey(d) { return "vod:" + (d.progressKey || d.url) }
     function playlistName(pid) {
         for (const p of Settings.playlists) if (p.id === pid) return p.name
         return ""
     }
     function tileInfo(pid, key) {
+        if (isVod(pid)) {
+            const d = vodItems[key]
+            return d ? { name: d.title + (d.kind === "episode" && d.subtitle ? "  ·  " + d.subtitle : ""), url: d.url, vod: true } : ({})
+        }
         if (isActive(pid)) {
             const gi = Channels.indexOfKey(key)
             return gi >= 0 ? Channels.info(gi) : ({})
@@ -49,6 +58,7 @@ FocusScope {
         return OtherPlaylists.info(pid, key)
     }
     function locked(pid, key) {
+        if (isVod(pid)) return false
         if (isActive(pid)) return Parental.blocked(Channels.indexOfKey(key))
         return !Parental.unlocked && OtherPlaylists.isLocked(pid, key)
     }
@@ -60,6 +70,7 @@ FocusScope {
 
     function open(currentIndex) {
         tiles.clear()
+        vodItems = ({})
         const list = []
         const has = (t) => list.some(x => x.pid === t.pid && x.key === t.key)
         if (currentIndex >= 0) list.push({ pid: Settings.activeId, key: Channels.keyAt(currentIndex) })
@@ -86,9 +97,17 @@ FocusScope {
         saveKeys()
         const t = selected < tiles.count ? tiles.get(selected) : (tiles.count ? tiles.get(0) : null)
         const pid = t ? t.pid : "", key = t ? t.key : ""
+        // A movie or episode selected: carry on with it full screen, from here.
+        let vod = null
+        if (t && isVod(pid) && vodItems[key]) {
+            const item = tileRepeater.itemAt(selected)
+            vod = Object.assign({}, vodItems[key], { start: item ? item.position() : (vodItems[key].start || 0) })
+        }
         picker.close()
         opened = false
         tiles.clear()
+        vodItems = ({})
+        if (vod) { closed(-1); vodChosen(vod); return }
         if (t && !isActive(pid)) {
             // Carry on with that channel: switch to its playlist.
             Session.switchPlaylistAndTune(pid, key)
@@ -101,9 +120,25 @@ FocusScope {
         const keys = []
         for (let i = 0; i < tiles.count; ++i) {
             const t = tiles.get(i)
-            keys.push(t.pid + "::" + t.key)
+            if (!isVod(t.pid)) keys.push(t.pid + "::" + t.key)   // movies aren't kept for next time
         }
         Settings.multiviewKeys = keys
+    }
+    // A movie or episode next to the channels (from its page or while it plays).
+    function addVod(descriptor, position) {
+        const key = vodKey(descriptor)
+        const items = Object.assign({}, vodItems)
+        items[key] = Object.assign({}, descriptor, { start: position || 0 })
+        vodItems = items
+        for (let i = 0; i < tiles.count; ++i)
+            if (tiles.get(i).key === key) { selected = i; return }
+        if (tiles.count < maxTiles) { tiles.append({ pid: "vod", key: key }); selected = tiles.count - 1 }
+        else { tiles.setProperty(tiles.count - 1, "pid", "vod"); tiles.setProperty(tiles.count - 1, "key", key); selected = tiles.count - 1 }
+        saveKeys()
+    }
+    function selectedVodItem() {
+        if (selected >= tiles.count || !isVod(tiles.get(selected).pid)) return null
+        return tileRepeater.itemAt(selected)
     }
     function addTile() {
         if (tiles.count >= maxTiles) { message(qsTr("Multi-view shows up to four channels")); return }
@@ -139,6 +174,7 @@ FocusScope {
     function zap(delta) {
         if (selected >= tiles.count) return
         const cur = tiles.get(selected)
+        if (isVod(cur.pid)) return
         const showing = []
         for (let i = 0; i < tiles.count; ++i) if (tiles.get(i).pid === cur.pid) showing.push(tiles.get(i).key)
         if (isActive(cur.pid)) {
@@ -292,6 +328,23 @@ FocusScope {
             case Qt.Key_ChannelDown: root.zap(-1); break
             case Qt.Key_H: hints.flash(); break
             case Qt.Key_L: root.cycleLayout(); break
+            // A movie tile: pause, and skip back / ahead (the controller's LB / RB).
+            case Qt.Key_Space:
+            case Qt.Key_MediaTogglePlayPause:
+            case Qt.Key_MediaPlay:
+            case Qt.Key_MediaPause: {
+                const v = root.selectedVodItem()
+                if (!v) return
+                v.togglePause()
+                break
+            }
+            case Qt.Key_AudioRewind:
+            case Qt.Key_AudioForward: {
+                const v = root.selectedVodItem()
+                if (!v) return
+                v.seekBy(e.key === Qt.Key_AudioRewind ? -30 : 30)
+                break
+            }
             case Qt.Key_M:
                 root.mainVideo.toggleMute()
                 root.message(root.mainVideo.muted ? qsTr("Muted") : qsTr("Sound on"))
@@ -306,12 +359,14 @@ FocusScope {
         }
 
         Repeater {
+            id: tileRepeater
             model: tiles
             delegate: Item {
                 id: tile
                 readonly property string pid: model.pid
                 readonly property string key: model.key
-                readonly property bool other: !root.isActive(pid)
+                readonly property bool isVod: root.isVod(pid)
+                readonly property bool other: !root.isActive(pid) && !isVod
                 readonly property string loadState: (OtherPlaylists.revision, other ? OtherPlaylists.state(pid) : "ready")
                 readonly property var info: (OtherPlaylists.revision, Parental.revision, root.tileInfo(pid, key))
                 readonly property bool isLocked: (Parental.revision, Parental.unlocked, OtherPlaylists.revision, root.locked(pid, key))
@@ -327,11 +382,26 @@ FocusScope {
                 Behavior on height { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
 
                 function start() {
+                    saveProgress()
                     error = ""
                     if (!canPlay) { video.stop(); return }
                     const c = root.tileInfo(pid, key)
+                    if (isVod) { vodPlaying = root.vodItems[key]; video.playVod(c.url, vodPlaying.start || 0); return }
+                    vodPlaying = null
                     if (c.url) video.play(c.url, c.userAgent, c.referrer)
                 }
+                // A movie or episode: where it got to goes to Continue watching.
+                property var vodPlaying: null
+                function position() { return video.position }
+                function togglePause() { video.togglePause(); root.message(video.paused ? qsTr("Paused") : qsTr("Playing")) }
+                function seekBy(secs) { video.seek(secs, true) }
+                function saveProgress() {
+                    const d = vodPlaying
+                    if (!d || video.position <= 0 || video.duration <= 0 || (d.kind !== "movie" && d.kind !== "episode")) return
+                    Vod.saveProgress(d, video.position, video.duration)
+                }
+                Timer { interval: 10000; repeat: true; running: tile.isVod && root.opened; onTriggered: tile.saveProgress() }
+                Component.onDestruction: saveProgress()
                 onKeyChanged: start()
                 onPidChanged: start()
                 onCanPlayChanged: start()
@@ -340,7 +410,7 @@ FocusScope {
                 MpvVideo {
                     id: video
                     anchors.fill: parent
-                    timeshiftMb: 0                       // no pause buffer for tiles
+                    timeshiftMb: tile.isVod ? 64 : 0     // no pause buffer for channels
                     deinterlace: Settings.deinterlace
                     hardwareDecoding: Settings.hardwareDecoding
                     muted: !tile.isSelected || root.mainVideo.muted
@@ -393,7 +463,7 @@ FocusScope {
                         x: 12
                         width: parent.width - 24
                         elide: Text.ElideRight
-                        text: (tile.isSelected ? "♪  " : "") + (tile.other ? root.playlistName(tile.pid) + "  ·  " : "")
+                        text: (tile.isSelected ? "♪  " : "") + (tile.isVod ? (video.paused ? "⏸  " : "▶  ") : "") + (tile.other ? root.playlistName(tile.pid) + "  ·  " : "")
                               + (tile.info.number !== undefined ? tile.info.number + "  " : "") + (tile.info.name || "")
                               + (tile.info.nowTitle ? "  ·  " + tile.info.nowTitle : "")
                         color: Theme.text
@@ -445,6 +515,7 @@ FocusScope {
         id: hints
         property bool shown: false
         readonly property bool hasTile: root.selected < tiles.count
+        readonly property bool onVod: hasTile && (tiles.count, root.isVod(tiles.get(root.selected).pid))
         readonly property bool wide: root.width >= 1100
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
@@ -466,13 +537,18 @@ FocusScope {
             spacing: 4
             BarButton {
                 icon: Icons.back; label: qsTr("Previous channel"); shortcut: "Page Down"; showLabel: false
-                visible: hints.hasTile
+                visible: hints.hasTile && !hints.onVod
                 onClicked: root.zap(-1)
             }
             BarButton {
                 icon: Icons.back; rotation: 180; label: qsTr("Next channel"); shortcut: "Page Up"; showLabel: false
-                visible: hints.hasTile
+                visible: hints.hasTile && !hints.onVod
                 onClicked: root.zap(1)
+            }
+            BarButton {
+                icon: Icons.pause; label: qsTr("Pause / play"); shortcut: "Space"; showLabel: false
+                visible: hints.onVod
+                onClicked: { const v = root.selectedVodItem(); if (v) v.togglePause() }
             }
             BarButton {
                 icon: Icons.edit; label: qsTr("Change channel"); shortcut: "Enter"; showLabel: hints.wide
@@ -516,7 +592,7 @@ FocusScope {
 
         function open(t) {
             target = t
-            pid = t >= 0 && t < tiles.count ? tiles.get(t).pid : Settings.activeId
+            pid = t >= 0 && t < tiles.count && !root.isVod(tiles.get(t).pid) ? tiles.get(t).pid : Settings.activeId
             field.text = ""
             refresh()
             opened = true

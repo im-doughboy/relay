@@ -17,6 +17,7 @@ FocusScope {
     property int seasonIndex: 0
     signal closed()
     signal play(var descriptor)
+    signal multiView(var descriptor)
     signal message(string text)
 
     readonly property bool isSeries: kind === "series"
@@ -61,6 +62,11 @@ FocusScope {
     function playMain(fromStart) {
         const d = Vod.playback(info, -1, fromStart)
         if (d.url) play(d)
+    }
+    // In multi-view, next to live channels (a series: the episode Play would play).
+    function watchInMultiView() {
+        const d = Vod.playback(info, -1, false)
+        if (d.url) multiView(d)
     }
     function playEpisode(e) {
         const d = Vod.playback(info, e.index, false)
@@ -299,7 +305,7 @@ FocusScope {
                 text: root.info.favorite ? qsTr("★  Favorite") : qsTr("☆  Add to favorites")
                 onClicked: root.toggleFavorite()
                 KeyNavigation.left: trailerButton.visible ? trailerButton : startOver.visible ? startOver : primary
-                KeyNavigation.right: watchedButton.visible ? watchedButton : null
+                KeyNavigation.right: watchedButton.visible ? watchedButton : multiButton
                 Keys.onDownPressed: if (root.isSeries) (seasonList.count > 1 ? seasonList : episodeList).forceActiveFocus()
             }
             ActionButton {
@@ -308,6 +314,15 @@ FocusScope {
                 text: root.info.watched ? qsTr("Mark not watched") : qsTr("Mark watched")
                 onClicked: root.toggleWatched(null)
                 KeyNavigation.left: favButton
+                KeyNavigation.right: multiButton
+            }
+            ActionButton {
+                id: multiButton
+                enabled: !root.loading && !root.failure
+                text: qsTr("⊞  Multi-view")
+                onClicked: root.watchInMultiView()
+                KeyNavigation.left: watchedButton.visible ? watchedButton : favButton
+                Keys.onDownPressed: if (root.isSeries) (seasonList.count > 1 ? seasonList : episodeList).forceActiveFocus()
             }
         }
 

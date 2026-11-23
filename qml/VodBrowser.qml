@@ -11,6 +11,7 @@ FocusScope {
     signal closed()
     signal message(string text)
     signal playRequested(var descriptor)
+    signal multiViewRequested(var descriptor)
     signal recordingsRequested()
     signal pinRequested(string reason, var onOk)
 
@@ -105,6 +106,22 @@ FocusScope {
         if (Vod.section === 0) { Vod.section = 1; syncCategory(); if (browsing) home.focusRows() }
         else recordingsRequested()
     }
+    // A remote's or the phone's Search: the box at the top.
+    function focusSearch() {
+        details.close()
+        searchField.forceActiveFocus()
+        searchField.selectAll()
+    }
+    // The controller's LB / RB (a remote's ⏪ / ⏩): the tab before / after,
+    // round from Recordings to Movies.
+    function stepSection(delta) {
+        details.close()
+        const next = (Vod.section + delta + 3) % 3
+        if (next === 2) { recordingsRequested(); return }
+        Vod.section = next
+        syncCategory()
+        showHome()
+    }
     function cycleSort() {
         Vod.sort = (Vod.sort + 1) % Vod.sortNames.length
         message(qsTr("Order: %1").arg(Vod.sortNames[Vod.sort]))
@@ -128,6 +145,10 @@ FocusScope {
 
     visible: opened
     Keys.onEscapePressed: close()
+    Keys.onPressed: (e) => {
+        if (e.key === Qt.Key_AudioRewind) { stepSection(-1); e.accepted = true }
+        else if (e.key === Qt.Key_AudioForward) { stepSection(1); e.accepted = true }
+    }
 
     Connections {
         target: Vod
@@ -602,6 +623,7 @@ FocusScope {
         anchors.fill: parent
         onClosed: root.browsing ? home.focusRows() : grid.forceActiveFocus()
         onPlay: (d) => root.playRequested(d)
+        onMultiView: (d) => root.multiViewRequested(d)
         onMessage: (text) => root.message(text)
     }
 }

@@ -68,6 +68,8 @@ Gamepads::Gamepads(RemoteInput *remote, QObject *parent) : QObject(parent), m_re
 #ifdef RELAY_HAVE_SDL
     // No SDL window: without this SDL thinks Relay is in the background and drops the events.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // SDL would take Ctrl+C / "please quit" for itself: Relay closes as usual.
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
         qWarning().noquote() << "Controllers: SDL couldn't start:" << SDL_GetError();

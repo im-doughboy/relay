@@ -42,6 +42,7 @@ public:
         bool forceType = false;    // say contentType even when the provider says something (DLNA TVs)
         QString dlnaFeatures;      // contentFeatures.dlna.org (DLNA TVs ask)
         bool joinHls = false;      // an HLS channel sent on as one MPEG-TS stream (TVs without HLS)
+        bool shareLive = false;    // a live MPEG-TS channel: one provider connection, shared by the TV's requests
     };
     // The path (on this server) the receiver should play; starts the server.
     QString add(const Source &source);
@@ -62,8 +63,10 @@ private:
         Source source;
         QStringList parts;                       // addresses found in playlists, by index
         std::shared_ptr<TsSegmenter> segmenter;
-        QPointer<QNetworkReply> feed;            // the one provider connection for HLS output
+        QPointer<QNetworkReply> feed;            // the one provider connection (HLS output, shared live)
         int feedFailures = 0;
+        QList<QPointer<QTcpSocket>> listeners;   // shared live: the TV's open requests
+        int logged = 0;                          // requests written to the log
     };
     struct Waiting { QPointer<QTcpSocket> socket; QString token; qint64 since; };
 
@@ -73,6 +76,9 @@ private:
     void pipe(QTcpSocket *socket, const QString &token, const QString &url, const QByteArray &method,
               const QHash<QByteArray, QByteArray> &headers);
     void startFeed(const QString &token);
+    void serveShared(QTcpSocket *socket, const QString &token, const QByteArray &method,
+                     const QHash<QByteArray, QByteArray> &headers);
+    void closeListeners(Entry &e);
     void serveJoined(QTcpSocket *socket, const Source &source, const QByteArray &method,
                      const QHash<QByteArray, QByteArray> &headers);
     void answerWaiting();

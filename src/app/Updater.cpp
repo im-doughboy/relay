@@ -26,18 +26,22 @@
 
 namespace {
 constexpr int kFirstCheckMs = 45 * 1000;          // after start, once things have settled
-constexpr int kEveryMs = 24 * 3600 * 1000;
+constexpr qint64 kEverySecs = 6 * 3600;            // then six hours after the last check
+constexpr int kLookMs = 10 * 60 * 1000;            // by the clock, so sleep doesn't stretch it
 const char kTokenKey[] = "github-token";
 } // namespace
 
 Updater::Updater(QObject *parent) : QObject(parent), m_net(new QNetworkAccessManager(this))
 {
-    m_timer.setSingleShot(true);
+    // Once at start, then whenever six hours have passed since the last
+    // check (one by hand counts too).
+    QTimer::singleShot(kFirstCheckMs, this, [this] { if (autoCheck()) check(false); });
+    m_timer.setInterval(kLookMs);
     connect(&m_timer, &QTimer::timeout, this, [this] {
-        if (autoCheck()) check(false);
-        m_timer.start(kEveryMs);
+        const qint64 last = QSettings().value(QStringLiteral("updates/lastCheck")).toLongLong();
+        if (autoCheck() && QDateTime::currentSecsSinceEpoch() - last >= kEverySecs) check(false);
     });
-    m_timer.start(kFirstCheckMs);
+    m_timer.start();
 }
 
 QString Updater::currentVersion() const { return QCoreApplication::applicationVersion(); }

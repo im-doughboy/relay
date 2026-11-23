@@ -166,5 +166,6 @@ private:
     int m_mediaSession = -1;
     QJsonObject m_pendingLoad;
     bool m_sawPlaying = false;
+    QString m_lastState;       // for the log: what the Chromecast says it's doing
     bool m_answered = false;   // it spoke Cast at least once
 };

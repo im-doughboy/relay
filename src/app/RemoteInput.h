@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QVariantMap>
 
 // One way in for remotes, game controllers and the phone remote (QML: Remote).
 //
@@ -30,6 +31,14 @@ public:
     // The action a remote's own key means ("" for ordinary keys).
     static QString actionForRemoteKey(int key);
     static QStringList actions();
+
+    // Typing from the phone: the text box that has the keyboard in Relay
+    // (search, a playlist address…), if there is one.
+    static QObject *focusedField();
+    // {typing, text, hint, secret}: what the phone shows.
+    static QVariantMap fieldState();
+    // Puts this text in that box, as if typed; false without one.
+    bool setFieldText(const QString &text);
 
 signals:
     void action(const QString &name);
