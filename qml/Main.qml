@@ -232,7 +232,12 @@ Window {
         hardwareDecoding: Settings.hardwareDecoding
         audioDelayMs: Settings.audioDelayMs
         defaultUserAgent: Settings.userAgent
-        onPlaybackError: (message) => win.playbackError = message
+        onPlaybackError: (message) => {
+            win.playbackError = message
+            // A movie or episode other playlists have too: offer them.
+            if (Player.vodActive && Player.vod.sourceCount > 1)
+                win.chooseSource(qsTr("%1 didn't play it. Try another source:").arg(Player.vod.sourceName || qsTr("That source")), Player.vod.sourceIndex)
+        }
         onHardwareDecodingFailed: toast.show(qsTr("The graphics card's video decoder failed · Relay switched to software decoding until it restarts"), true)
         onPlaybackStarted: {
             win.playbackError = ""
@@ -746,6 +751,7 @@ Window {
         onCastRequested: castPicker.open()
         // Multi-view is live channels: the movie keeps its place, and live TV opens in tiles.
         onMultiViewRequested: win.multiViewFromVod()
+        onSourceRequested: win.chooseSource(qsTr("Play from"), -1)
     }
 
     // Live TV's player controls (bottom; appear with the mouse or after a skip).
@@ -1113,6 +1119,30 @@ Window {
     }
 
     Toast { id: toast; z: 30 }
+
+    // ---- Several playlists have this movie or episode --------------------------------------
+    Connections {
+        target: Vod
+        function onPlaybackReady(d) { win.playbackError = ""; Player.playVod(d) }
+        function onPlaybackProblem(message) { toast.show(message, true) }
+    }
+    function chooseSource(heading, failed) {
+        if (!Player.vodActive || !(Player.vod.sourceCount > 1)) return
+        const list = Vod.sources(Player.vod.detailsKind, Player.vod.detailsId)
+        if (list.length < 2) return
+        vodSourcePicker.open(list, heading, failed >= 0 ? -1 : Player.vod.sourceIndex, failed)
+    }
+    SourcePicker {
+        id: vodSourcePicker
+        onChosen: (i) => {
+            win.playbackError = ""
+            const at = video.position > 0 ? video.position : (Player.vod.start || 0)
+            if (Player.vod.kind === "movie" || Player.vod.kind === "episode") win.saveVodProgress()
+            Vod.switchSource(Player.vod, i, at)
+            win.returnFocus()
+        }
+        onDismissed: win.returnFocus()
+    }
 
     // A new version (Settings → Updates has the same).
     UpdateBanner { z: 24; suppressed: win.showSetup }

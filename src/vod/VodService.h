@@ -5,6 +5,7 @@
 #include <QAbstractListModel>
 #include <QDateTime>
 #include <QHash>
+#include <QSet>
 #include <QObject>
 #include <QVariantList>
 #include <QVariantMap>
@@ -12,6 +13,7 @@
 #include <functional>
 
 class QNetworkAccessManager;
+class QTimer;
 class QNetworkReply;
 class UserLibrary;
 class TmdbClient;
@@ -80,6 +82,8 @@ class VodService : public QObject
     Q_PROPERTY(int sort READ sort WRITE setSort NOTIFY sortChanged)
     Q_PROPERTY(QStringList sortNames READ sortNames CONSTANT)
     Q_PROPERTY(VodModel *items READ items CONSTANT)
+    // Movies and series of every playlist together, each title once (Settings).
+    Q_PROPERTY(bool combine READ combine WRITE setCombine NOTIFY combineChanged)
 
 public:
     VodService(UserLibrary *library, const QString &cacheDir, QObject *parent = nullptr);
@@ -111,6 +115,31 @@ public:
     // From the loaded playlist. Called by Session.
     void setSource(const struct PlaylistResult &result);
     void clear();
+
+    // ---- Several playlists as one catalogue ----------------------------------------
+    // The other playlists' movies and series join these: a title several
+    // sources have shows once and plays from the best of them (4K before
+    // FHD before HD…), with the others to switch to. Its place, favorite and
+    // watched mark belong to the title, whichever source played.
+    bool combine() const { return m_combine; }
+    void setCombine(bool on);
+    void setOwnSource(const QString &playlistId, const QString &name) { m_ownId = playlistId; m_ownName = name; }
+    void addExtraSource(const QString &playlistId, const QString &name, const struct PlaylistResult &result);
+    void clearExtraSources();
+    // Is a playlist's account busy right now (a recording, multi-view…)?
+    void setBusyCheck(std::function<bool(const QString &playlistId)> check) { m_busy = std::move(check); }
+    // Where a title plays: [{index, playlistId, name, quality ("4K", "FHD", "HD", "SD" or ""), busy, best}].
+    Q_INVOKABLE QVariantList sources(const QString &kind, const QString &id) const;
+    // Plays a title or episode (as playback() describes) from its best
+    // source, or from `sourceIndex` (sources()); answers with playbackReady()
+    // or playbackProblem(). The descriptor carries sourceIndex, sourceCount
+    // and sourceName.
+    Q_INVOKABLE void startPlayback(const QVariantMap &details, int episodeIndex = -1, bool fromStart = false,
+                                   int sourceIndex = -1);
+    // The same movie or episode from another source, carrying on at `position`.
+    Q_INVOKABLE void switchSource(const QVariantMap &descriptor, int sourceIndex, double position);
+    // "4K" / "FHD" / "HD" / "SD" from a title's tags: 4, 3, 2, 1; 0 when it doesn't say.
+    static int qualityOf(const QString &title);
 
     Q_INVOKABLE void ensureLoaded();       // load on first use (cache or network)
     Q_INVOKABLE void reload();             // fetch again from the server
@@ -163,6 +192,9 @@ signals:
     void tmdbKeyRejected();
     // Marked watched / not watched by hand (for Trakt).
     void watchedByHand(const QVariantMap &descriptor, bool watched);
+    void combineChanged();
+    void playbackReady(const QVariantMap &descriptor);
+    void playbackProblem(const QString &message);
 
 private:
     enum class Mode { None, Xtream, M3u, Portal };
@@ -216,6 +248,30 @@ private:
     QString m_account;                 // cache folder for this login
     QString m_portal;                  // PortalClient account (Mode::Portal)
     QVariantMap shelfItem(const VodModel::Row &r) const;
+
+    // ---- several playlists ----
+    struct SourceRef { int extra = -1; QString id; int quality = 0; };   // extra -1: this playlist
+    struct Extra { QString playlistId, name; VodService *svc = nullptr; };
+    QVector<Extra> m_extras;
+    QHash<QString, QVector<SourceRef>> m_sourcesOf;   // "movie:<id>" / "series:<id>": where it plays (first: its own details)
+    QVector<VodItem> m_ownMovies, m_ownSeries;
+    QVector<VodParser::Category> m_ownMovieCats, m_ownSeriesCats;
+    QStringList m_ownMovieFolded, m_ownSeriesFolded;
+    bool m_combine = true;
+    bool m_isExtra = false;           // a helper holding another playlist's catalogue
+    QString m_ownId, m_ownName;
+    std::function<bool(const QString &)> m_busy;
+    QTimer *m_mergeTimer = nullptr;
+    void merge();
+    VodService *serviceOf(const SourceRef &r) { return r.extra < 0 ? this : m_extras.value(r.extra).svc; }
+    QString playlistOf(const SourceRef &r) const { return r.extra < 0 ? m_ownId : m_extras.value(r.extra).playlistId; }
+    QString nameOf(const SourceRef &r) const { return r.extra < 0 ? m_ownName : m_extras.value(r.extra).name; }
+    int bestSource(const QVector<SourceRef> &refs) const;
+    void extraDetails(int extra, const QVariantMap &d);
+    QHash<QString, std::function<void(const QVariantMap &)>> m_waitingExtra;
+    QSet<QString> m_extraPages;       // "<extra>|kind:id" asked for by a title's page
+    void detailsOf(const SourceRef &r, const QString &kind, std::function<void(const QVariantMap &)> done);
+    void startPlaybackAt(const QVariantMap &details, int episodeIndex, bool fromStart, int sourceIndex, double start);   // "<extra>|kind:id" -> continue with its details
     QHash<QString, std::pair<qint64, QVariantMap>> m_recentDetails;   // "kind:id" -> (when, details)
     QHash<QString, QVariantMap> m_portalInfo;   // "movie:<id>" / "series:<id>" -> details
     QVector<Channel> m_m3uMovies, m_m3uEpisodes;

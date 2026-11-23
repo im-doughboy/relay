@@ -21,6 +21,7 @@ Item {
     signal optionsRequested()
     signal castRequested()
     signal multiViewRequested()
+    signal sourceRequested()
 
     readonly property bool catchup: Player.vod.kind === "catchup"
     property real pendingPos: -1          // catch-up seek waiting to be sent
@@ -323,7 +324,7 @@ Item {
                             { label: qsTr("Audio"), short: qsTr("Audio"), type: "audio" },
                             { label: qsTr("Subtitles"), short: qsTr("Subs"), type: "sub" },
                             { label: qsTr("Picture & sound"), short: qsTr("Picture"), type: "options" },
-                        ].concat(Player.vod.kind === "episode" ? [{ label: qsTr("Next ▸"), short: qsTr("Next ▸"), type: "next" }]
+                        ].concat(Player.vod.sourceCount > 1 ? [{ label: qsTr("Source: %1").arg(Player.vod.sourceName || "?"), short: qsTr("Source"), type: "source" }] : []).concat(Player.vod.kind === "episode" ? [{ label: qsTr("Next ▸"), short: qsTr("Next ▸"), type: "next" }]
                                : root.catchup ? [{ label: qsTr("Live ⇥"), short: qsTr("Live ⇥"), type: "live" }] : [])
                         delegate: Rectangle {
                             readonly property real longWidth: longText.implicitWidth + 28
@@ -347,6 +348,7 @@ Item {
                                 onClicked: modelData.type === "next" ? root.nextRequested()
                                          : modelData.type === "live" ? root.liveRequested()
                                          : modelData.type === "options" ? root.optionsRequested()
+                                         : modelData.type === "source" ? root.sourceRequested()
                                          : root.openTrackMenu(modelData.type, parent)
                             }
                         }

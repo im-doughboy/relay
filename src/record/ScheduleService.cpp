@@ -600,3 +600,10 @@ void ScheduleService::shutdown()
         }
     save();
 }
+
+bool ScheduleService::recordingFrom(const QString &playlistId) const
+{
+    for (const Item &it : m_items)
+        if (it.status == QLatin1String("recording") && it.playlistId == playlistId) return true;
+    return false;
+}

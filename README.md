@@ -150,6 +150,12 @@ Shift+scroll to move through time. Browsing goes 2 days back and 7 days ahead.
   through [yt-dlp](https://github.com/yt-dlp/yt-dlp), which the Windows download includes and
   keeps up to date; without it they open in the browser. Settings → Movies & series turns
   trailers that start by themselves off.
+- **All your playlists together:** with several playlists, their movies and series show as one
+  catalogue, each title once (matched by name and year; tags like "EN -" or "[4K]" are left
+  out). It plays from the best source (4K, then FHD, then HD; then your playlist order), and
+  **Source** on its page or in the player switches to another, carrying on from the same
+  moment. If a source won't play, Relay offers the others. Settings → Movies & series turns
+  this off. (MAC-portal playlists aren't combined.)
 - **Continue watching** keeps your place in movies and episodes. A movie counts as watched at
   90 %, and finishing an episode queues the next one. Delete removes an item from the list.
 - Playback: **← →** seek 10 s (Shift: 1 min), **↑ ↓** 1 min, Page Up/Down 10 min, Space pause,

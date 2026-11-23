@@ -715,6 +715,111 @@ private slots:
         QCOMPARE(cat.seriesCategories, QStringList{QStringLiteral("Shows")});
     }
 
+    void vod_combined_sources()
+    {
+        QCOMPARE(VodService::qualityOf("Alpha (2020) [4K]"), 4);
+        QCOMPARE(VodService::qualityOf("EN - Beta FHD"), 3);
+        QCOMPARE(VodService::qualityOf("Gamma 720p"), 2);
+        QCOMPARE(VodService::qualityOf("Hidden Figures"), 0);
+
+        QTemporaryDir dir;
+        UserLibrary lib(dir.filePath("library.json"));
+        VodService vod(&lib, dir.filePath("vod"));
+        vod.setCombine(true);
+        vod.setOwnSource("p1", "Home");
+        // This playlist: Alpha in HD, Beta twice (HD and FHD), a show with two episodes.
+        vod.setSource(M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1,Live\nhttp://h/live/u/p/1.ts\n"
+            "#EXTINF:-1 group-title=\"Films\",Alpha (2020)\nhttp://one/alpha.mp4\n"
+            "#EXTINF:-1 group-title=\"Films\",Beta\nhttp://one/beta.mp4\n"
+            "#EXTINF:-1 group-title=\"Films FHD\",Beta FHD\nhttp://one/beta-fhd.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E01\nhttp://one/series/u/p/11.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E02\nhttp://one/series/u/p/12.mp4\n"));
+        vod.ensureLoaded();
+        QTRY_VERIFY(vod.loaded());
+        QCOMPARE(vod.movieCount(), 2);                         // Beta once
+        // Another playlist: Alpha in 4K, Delta, and the show with a third episode.
+        vod.addExtraSource("p2", "Other", M3uParser::parse(
+            "#EXTM3U\n#EXTINF:-1,Live\nhttp://h2/live/u/p/1.ts\n"
+            "#EXTINF:-1 group-title=\"Movies\",EN - Alpha (2020) [4K]\nhttp://two/alpha4k.mp4\n"
+            "#EXTINF:-1 group-title=\"Movies\",Delta\nhttp://two/delta.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E01\nhttp://two/series/u/p/21.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E02\nhttp://two/series/u/p/22.mp4\n"
+            "#EXTINF:-1 group-title=\"Shows\",Show S01 E03\nhttp://two/series/u/p/23.mp4\n"));
+        vod.ensureLoaded();
+        QTRY_COMPARE(vod.movieCount(), 3);                     // Alpha, Beta, Delta
+        QCOMPARE(vod.seriesCount(), 1);
+
+        vod.setSort(2);
+        QString alpha, delta;
+        for (int i = 0; i < vod.items()->count(); ++i) {
+            const QVariantMap r = vod.rowAt(i);
+            if (r.value("title").toString().startsWith("Alpha")) alpha = r.value("id").toString();
+            if (r.value("title").toString() == "Delta") delta = r.value("id").toString();
+        }
+        QVERIFY(!alpha.startsWith('@'));                       // this playlist's title
+        QVERIFY(delta.startsWith("@p2:"));                     // only the other one has it
+        const QVariantList src = vod.sources("movie", alpha);
+        QCOMPARE(src.size(), 2);
+        QCOMPARE(src[1].toMap().value("quality").toString(), QString("4K"));
+        QVERIFY(src[1].toMap().value("best").toBool());
+        QCOMPARE(src[1].toMap().value("name").toString(), QString("Other"));
+
+        // Plays from the best source (4K, the other playlist), or the one asked for.
+        QSignalSpy details(&vod, &VodService::detailsReady);
+        QSignalSpy ready(&vod, &VodService::playbackReady);
+        vod.requestDetails("movie", alpha);
+        QTRY_COMPARE(details.count(), 1);
+        const QVariantMap d = details.takeFirst().first().toMap();
+        vod.startPlayback(d);
+        QTRY_COMPARE(ready.count(), 1);
+        QVariantMap play = ready.takeFirst().first().toMap();
+        QCOMPARE(play.value("url").toString(), QString("http://two/alpha4k.mp4"));
+        QCOMPARE(play.value("sourceIndex").toInt(), 1);
+        QCOMPARE(play.value("sourceCount").toInt(), 2);
+        QCOMPARE(play.value("key").toString(), "movie:" + alpha);   // its place belongs to the title
+        vod.startPlayback(d, -1, false, 0);
+        QTRY_COMPARE(ready.count(), 1);
+        QCOMPARE(ready.takeFirst().first().toMap().value("url").toString(), QString("http://one/alpha.mp4"));
+        // Switching carries on where it was.
+        vod.switchSource(play, 0, 321);
+        QTRY_COMPARE(ready.count(), 1);
+        play = ready.takeFirst().first().toMap();
+        QCOMPARE(play.value("url").toString(), QString("http://one/alpha.mp4"));
+        QCOMPARE(play.value("start").toDouble(), 321.0);
+
+        // A title only the other playlist has: its page and its address.
+        vod.requestDetails("movie", delta);
+        QTRY_COMPARE(details.count(), 1);
+        const QVariantMap dd = details.takeFirst().first().toMap();
+        QCOMPARE(dd.value("id").toString(), delta);
+        QCOMPARE(dd.value("url").toString(), QString("http://two/delta.mp4"));
+        QCOMPARE(dd.value("key").toString(), "movie:" + delta);
+
+        // The same episode from the other source.
+        const QString show = vod.shelves(10).isEmpty() ? QString() : QString();
+        Q_UNUSED(show);
+        vod.setSection(1);
+        const QString series = vod.rowAt(0).value("id").toString();
+        QCOMPARE(vod.sources("series", series).size(), 2);
+        vod.requestDetails("series", series);
+        QTRY_COMPARE(details.count(), 1);
+        const QVariantMap sd = details.takeFirst().first().toMap();
+        vod.startPlayback(sd, 1, false, 1);
+        QTRY_COMPARE(ready.count(), 1);
+        play = ready.takeFirst().first().toMap();
+        QCOMPARE(play.value("url").toString(), QString("http://two/series/u/p/22.mp4"));
+        QCOMPARE(play.value("episode").toInt(), 2);
+
+        // Off: just this playlist (Beta twice again).
+        vod.setCombine(false);
+        vod.setSection(0);
+        QCOMPARE(vod.movieCount(), 3);
+        QCOMPARE(vod.items()->count(), 3);
+        QVERIFY(vod.sources("movie", alpha).isEmpty());
+        vod.setCombine(true);
+    }
+
     void vod_service_m3u_progress_and_favorites()
     {
         QTemporaryDir dir;

@@ -3,6 +3,21 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.5.0
+
+- **Movies & series from all your playlists, as one:** with more than one playlist, their movies
+  and series now show together, and a title several of them have shows **once**. Duplicates
+  within one provider (the same film in an HD and a 4K category) merge too.
+- **The best source plays:** 4K before FHD before HD (from the title or its category), your
+  playlist order breaking ties. Your place, favorites and watched marks belong to the title,
+  whichever source played it.
+- **Switch source** any time: **Source** on a title's page, or **Source** in the player bar
+  (it carries on from the same moment).
+- **If a source won't play** (often an account already in use), Relay shows the other sources
+  so you can pick one, marking the best, the one that failed and any that are busy recording.
+- Settings → Movies & series turns this off, to see only the playlist you're on. (Playlists
+  from a MAC portal aren't combined yet.)
+
 ## 0.4.0
 
 - **Movies & series, redesigned** to feel like the big streaming apps on a TV:

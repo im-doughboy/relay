@@ -969,6 +969,21 @@ FocusScope {
                     onClicked: Trailers.autoplay = !Trailers.autoplay
                 }
             }
+            Column {
+                width: card.width
+                spacing: 8
+                Text {
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: qsTr("All playlists together: the movies and series of every playlist show as one list, each title once. It plays from the best source (4K before FHD before HD); a title's page and the player can switch to another, and if one won't play Relay offers the others.")
+                    color: Theme.textSecondary
+                    font.pixelSize: Theme.fontSmall
+                }
+                ActionButton {
+                    text: Vod.combine ? qsTr("Movies & series from all playlists: on") : qsTr("Movies & series from all playlists: off")
+                    onClicked: Vod.combine = !Vod.combine
+                }
+            }
 
         }
 

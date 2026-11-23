@@ -17,6 +17,7 @@
 #include "player/MpvItem.h"
 #include "player/PlayerController.h"
 #include "sources/PlaylistService.h"
+#include "sources/XtreamParser.h"
 #include "vod/VodService.h"
 #include "sources/CatchupService.h"
 #include "record/ScheduleService.h"
@@ -201,6 +202,57 @@ int main(int argc, char *argv[])
     auto *session = new Session(settings, playlists, channels, player, epg, vod, catchup, &app);
     session->setStorage(library, schedule, dataDir);
     auto *others = new OtherPlaylists(settings, dataDir, &app);
+
+    // Movies & series from every playlist as one catalogue: the other
+    // playlists' logins (an M3U without one is read for its movie entries).
+    vod->setBusyCheck([schedule](const QString &playlistId) { return schedule->recordingFrom(playlistId); });
+    auto extrasGen = std::make_shared<int>(0);
+    auto refreshVodExtras = [vod, settings, extrasGen] {
+        ++*extrasGen;
+        const int gen = *extrasGen;
+        vod->setOwnSource(settings->activeId(), settings->activeName());
+        vod->clearExtraSources();
+        for (const QString &id : settings->playlistIds()) {
+            if (id == settings->activeId()) continue;
+            const AppSettings::Source src = settings->source(id);
+            const QString name = settings->playlistName(id);
+            PlaylistResult r;
+            XtreamParser::Credentials c;
+            if (src.type == QLatin1String("xtream") && !src.server.isEmpty()) {
+                r.xtreamServer = src.server; r.xtreamUser = src.user; r.xtreamPassword = src.password;
+            } else if (src.type == QLatin1String("m3u") && !src.m3u.isEmpty()
+                       && XtreamParser::credentialsFromPlaylistUrl(QUrl::fromUserInput(src.m3u), &c)) {
+                r.xtreamServer = c.server; r.xtreamUser = c.username; r.xtreamPassword = c.password;
+            } else if (src.type == QLatin1String("m3u") && !src.m3u.isEmpty()) {
+                // A whole playlist to read: only once Movies & series are opened.
+                auto start = [vod, id, name, url = src.m3u, gen, extrasGen] {
+                    if (gen != *extrasGen) return;
+                    auto *loader = new PlaylistService(vod);
+                    QObject::connect(loader, &PlaylistService::loaded, vod, [vod, loader, id, name, gen, extrasGen](const PlaylistResult &res) {
+                        loader->deleteLater();
+                        if (gen == *extrasGen) vod->addExtraSource(id, name, res);
+                    });
+                    QObject::connect(loader, &PlaylistService::failed, loader, &QObject::deleteLater);
+                    loader->loadM3u(url);
+                };
+                if (vod->loaded() || vod->loading()) { start(); continue; }
+                auto once = std::make_shared<QMetaObject::Connection>();
+                *once = QObject::connect(vod, &VodService::stateChanged, vod, [vod, start, once] {
+                    if (!vod->loaded() && !vod->loading()) return;
+                    QObject::disconnect(*once);
+                    start();
+                });
+                continue;
+            } else {
+                continue;   // a portal: not combined (yet)
+            }
+            vod->addExtraSource(id, name, r);
+        }
+    };
+    QObject::connect(settings, &AppSettings::playlistsChanged, vod, refreshVodExtras);
+    QObject::connect(settings, &AppSettings::sourceChanged, vod, refreshVodExtras);
+    QObject::connect(session, &Session::readyChanged, vod, refreshVodExtras);
+    refreshVodExtras();
 
     qmlRegisterType<MpvItem>("Relay.Video", 1, 0, "MpvVideo");
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Settings", settings);

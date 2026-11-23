@@ -44,6 +44,8 @@ public:
 
     QVariantList items() const;
     int recordingCount() const;
+    // Is something recording from this playlist right now (its account is in use)?
+    bool recordingFrom(const QString &playlistId) const;
     int revision() const { return m_revision; }
     QString folder() const { return m_folder; }
     void setFolder(const QString &folder);

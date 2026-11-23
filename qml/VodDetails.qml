@@ -74,18 +74,15 @@ FocusScope {
         return (h > 0 ? h + ":" : "") + mm + ":" + String(s).padStart(2, "0")
     }
     function code(e) { return "S" + e.season + " E" + e.episode }
-    function playMain(fromStart) {
-        const d = Vod.playback(info, -1, fromStart)
-        if (d.url) play(d)
-    }
+    // From the best source (several playlists may have it); the player
+    // starts when Vod.playbackReady() arrives.
+    function playMain(fromStart) { Vod.startPlayback(info, -1, fromStart) }
+    readonly property var sourceList: (info.id, info.key, Vod.sources(kind, itemId))
     function watchInMultiView() {
         const d = Vod.playback(info, -1, false)
         if (d.url) multiView(d)
     }
-    function playEpisode(e) {
-        const d = Vod.playback(info, e.index, false)
-        if (d.url) play(d)
-    }
+    function playEpisode(e) { Vod.startPlayback(info, e.index, false) }
     function toggleWatched(e) {
         const d = e ? Vod.playback(info, e.index, true) : Vod.playback(info, -1, true)
         const watched = e ? e.watched : info.watched
@@ -118,6 +115,11 @@ FocusScope {
                        progress: resume && info.dur > 0 ? info.pos / info.dur : -1 })
             if (info.pos > 0 || info.watched) out.push({ id: "fromStart", icon: Icons.fromStart, label: qsTr("Play from the beginning") })
         }
+        if (sourceList.length > 1) {
+            const best = sourceList.find(x => x.best) || sourceList[0]
+            out.push({ id: "source", icon: Icons.playlists,
+                       label: qsTr("Source: %1 (%2 in all)").arg(best.name + (best.quality ? " · " + best.quality : "")).arg(sourceList.length) })
+        }
         if (info.trailer) out.push({ id: "trailer", icon: Icons.movies, label: qsTr("Watch the trailer") })
         out.push({ id: "favorite", icon: Icons.heart, filled: !!info.favorite,
                    label: info.favorite ? qsTr("In your favorites") : qsTr("Add to favorites") })
@@ -135,6 +137,7 @@ FocusScope {
         case "favorite": toggleFavorite(); break
         case "watched": toggleWatched(null); break
         case "multiview": watchInMultiView(); break
+        case "source": sourcePicker.open(root.sourceList, qsTr("Play from"), -1, -1); break
         case "credits": credits.open(Object.assign({ kind: kind }, preview), info); break
         case "back": close(); break
         }
@@ -719,6 +722,12 @@ FocusScope {
             label: qsTr("Back")
             onClicked: episodesPage.hide()
         }
+    }
+
+    SourcePicker {
+        id: sourcePicker
+        onChosen: (i) => { Vod.startPlayback(root.info, -1, false, i); actions.forceActiveFocus() }
+        onDismissed: actions.forceActiveFocus()
     }
 
     // ---- Credits & more info -------------------------------------------------------------------

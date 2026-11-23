@@ -95,9 +95,7 @@ FocusScope {
         if (!item) return
         const info = infoOf(item)
         if (item.kind === "series" || !info) { openDetails(item.kind, item.id, item); return }
-        const d = Vod.playback(info, -1, false)
-        if (d.url) play(d)
-        else openDetails(item.kind, item.id, item)
+        Vod.startPlayback(info, -1, false)   // the player starts on Vod.playbackReady()
     }
     function toggleFavorite(item) {
         if (!item) return
