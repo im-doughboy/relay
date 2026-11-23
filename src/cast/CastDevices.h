@@ -107,6 +107,8 @@ signals:
     void playing();
     void failed(const QString &message);
     void stopped();
+    void finished();                         // played to the end (a movie or episode)
+    void progress(double position, double duration);
 
 private:
     void call(const QString &action, const QString &args, std::function<void(bool, const QByteArray &)> done = {},
@@ -116,6 +118,9 @@ private:
     QNetworkAccessManager *m_net;
     QTimer m_poll;
     bool m_started = false;
+    bool m_live = false;
+    double m_position = 0, m_duration = 0;   // as the TV last said
+    void pollPosition();
     double m_seekOnStart = 0;
     int m_stoppedPolls = 0;
     QString m_lastState;
@@ -138,6 +143,7 @@ public:
     void play();
     void pause();
     void stop();
+    void seek(double secs);
     // Stops the Chromecast, then deletes itself once that has gone out.
     void stopAndDelete();
 
@@ -151,6 +157,8 @@ signals:
     void playing();
     void failed(const QString &message);
     void stopped();
+    void finished();                         // played to the end (a movie or episode)
+    void progress(double position, double duration);
 
 private:
     void send(const QString &destination, const QString &ns, const QJsonObject &payload);
@@ -168,4 +176,6 @@ private:
     bool m_sawPlaying = false;
     QString m_lastState;       // for the log: what the Chromecast says it's doing
     bool m_answered = false;   // it spoke Cast at least once
+    QTimer m_statusPoll;       // how far in, while playing
+    double m_duration = 0;
 };

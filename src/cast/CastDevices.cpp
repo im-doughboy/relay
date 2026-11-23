@@ -319,7 +319,7 @@ void CastDiscovery::addByAddress(const QString &textIn)
 DlnaRenderer::DlnaRenderer(const CastDevice &device, QObject *parent)
     : QObject(parent), m_device(device), m_net(new QNetworkAccessManager(this))
 {
-    m_poll.setInterval(3000);
+    m_poll.setInterval(2000);
     connect(&m_poll, &QTimer::timeout, this, &DlnaRenderer::pollState);
 }
 
@@ -430,6 +430,8 @@ void DlnaRenderer::load(const QString &url, const QString &title, const QString 
 {
     m_started = false;
     m_stoppedPolls = 0;
+    m_live = live;
+    m_position = m_duration = 0;
     m_lastState.clear();
     qInfo().noquote() << "Cast: asking the TV to play" << mime << (live ? "(live)" : "");
     const QString meta = QString::fromUtf8(didl(url, title, mime, live));
@@ -450,6 +452,28 @@ void DlnaRenderer::play()
 }
 
 void DlnaRenderer::pause() { call(QStringLiteral("Pause"), QString()); }
+
+// How far in, and how long (RelTime / TrackDuration, "H:MM:SS").
+void DlnaRenderer::pollPosition()
+{
+    call(QStringLiteral("GetPositionInfo"), QString(), [this](bool ok, const QByteArray &body) {
+        if (!ok) return;
+        auto secs = [&body](const QByteArray &tag) {
+            const int at = body.indexOf("<" + tag + ">");
+            if (at < 0) return -1.0;
+            const int from = at + tag.size() + 2;
+            const QList<QByteArray> parts = body.mid(from, body.indexOf('<', from) - from).split(':');
+            if (parts.size() != 3) return -1.0;
+            bool a = false, b = false, c = false;
+            const double v = parts[0].toInt(&a) * 3600 + parts[1].toInt(&b) * 60 + parts[2].toDouble(&c);
+            return a && b && c ? v : -1.0;
+        };
+        const double pos = secs("RelTime"), dur = secs("TrackDuration");
+        if (pos >= 0) m_position = pos;
+        if (dur > 0) m_duration = dur;
+        if (pos >= 0) emit progress(m_position, m_duration);
+    });
+}
 
 void DlnaRenderer::seek(double secs)
 {
@@ -493,13 +517,20 @@ void DlnaRenderer::pollState()
             emit failed(m_started ? tr("The TV stopped with an error") : tr("The TV couldn't play this"));
             return;
         }
+        if (m_started && state == "PLAYING" && !m_live) pollPosition();
         if (state == "PLAYING" && !m_started) {
             m_started = true;
             if (m_seekOnStart > 5) { seek(m_seekOnStart); m_seekOnStart = 0; }
             emit playing();
         }
         else if (state == "STOPPED" || state == "NO_MEDIA_PRESENT") {
-            if (m_started) { m_poll.stop(); emit stopped(); return; }
+            if (m_started) {
+                m_poll.stop();
+                // At (or near) the end: it finished; otherwise someone stopped it.
+                const bool atEnd = !m_live && m_duration > 0 && (m_position >= m_duration - 45 || m_position >= m_duration * 0.97);
+                if (atEnd) emit finished(); else emit stopped();
+                return;
+            }
             // Never started: the TV gave up (Samsung: "An unexpected error has
             // occurred") and won't say more.
             if (++m_stoppedPolls >= 3) {
@@ -623,6 +654,11 @@ ChromecastClient::ChromecastClient(const CastDevice &device, QObject *parent)
         }
         emit failed(tr("Couldn't talk to the Chromecast: %1").arg(m_socket->errorString()));
     });
+    m_statusPoll.setInterval(1000);
+    connect(&m_statusPoll, &QTimer::timeout, this, [this] {
+        if (!m_transport.isEmpty())
+            send(m_transport, QLatin1String(kNsMedia), {{"type", "GET_STATUS"}, {"requestId", m_requestId++}});
+    });
     m_heartbeat.setInterval(5000);
     connect(&m_heartbeat, &QTimer::timeout, this, [this] {
         send(QStringLiteral("receiver-0"), QLatin1String(kNsHeartbeat), {{"type", "PING"}});
@@ -647,6 +683,7 @@ void ChromecastClient::connectTo(const QString &destination)
 
 void ChromecastClient::load(const QString &url, const QString &title, const QString &contentType, bool live, double startSecs)
 {
+    m_duration = 0;
     m_pendingLoad = QJsonObject{
         {"type", "LOAD"},
         {"autoplay", true},
@@ -723,12 +760,21 @@ void ChromecastClient::onMessage(const Message &m)
                 qInfo().noquote() << "Cast: the Chromecast is" << said.toLower();
             }
             if (state == QLatin1String("PLAYING") && !m_sawPlaying) { m_sawPlaying = true; emit playing(); }
+            // How far in: asked for every second while it plays.
+            const double dur = s.value(QLatin1String("media")).toObject().value(QLatin1String("duration")).toDouble();
+            if (dur > 0) m_duration = dur;
+            if (s.contains(QLatin1String("currentTime")) && state != QLatin1String("IDLE"))
+                emit progress(s.value(QLatin1String("currentTime")).toDouble(), m_duration);
+            if (state == QLatin1String("PLAYING") || state == QLatin1String("BUFFERING") || state == QLatin1String("PAUSED")) {
+                if (!m_statusPoll.isActive()) m_statusPoll.start();
+            } else m_statusPoll.stop();
             if (state == QLatin1String("IDLE") && m_sawPlaying) {
                 const bool live = m_pendingLoad.value(QLatin1String("media")).toObject().value(QLatin1String("streamType")).toString() == QLatin1String("LIVE");
                 m_sawPlaying = false;
                 if (reason == QLatin1String("ERROR")) emit failed(tr("The Chromecast stopped with an error"));
                 // A live channel doesn't finish: the stream stalled.
                 else if (live && reason == QLatin1String("FINISHED")) emit failed(tr("The channel stopped on the TV"));
+                else if (reason == QLatin1String("FINISHED")) emit finished();
                 else emit stopped();
                 continue;
             }
@@ -742,6 +788,13 @@ void ChromecastClient::play()
 {
     if (m_mediaSession >= 0)
         send(m_transport, QLatin1String(kNsMedia), {{"type", "PLAY"}, {"mediaSessionId", m_mediaSession}, {"requestId", m_requestId++}});
+}
+
+void ChromecastClient::seek(double secs)
+{
+    if (m_mediaSession >= 0)
+        send(m_transport, QLatin1String(kNsMedia), {{"type", "SEEK"}, {"mediaSessionId", m_mediaSession},
+                                                    {"currentTime", qMax(0.0, secs)}, {"requestId", m_requestId++}});
 }
 
 void ChromecastClient::pause()

@@ -2274,7 +2274,7 @@ private slots:
         PhoneRemote phone(&remote);
         QVERIFY(!phone.running());   // off until it's turned on
         phone.setEnabled(true);
-        QVERIFY(phone.running());
+        QTRY_VERIFY_WITH_TIMEOUT(phone.running(), 12000);   // 8800, or the next one after waiting for it
         QCOMPARE(phone.code().size(), 4);
         phone.setNowShowing("4791 · Take the Lead");
         const QString base = QStringLiteral("http://127.0.0.1:%1").arg(phone.port());

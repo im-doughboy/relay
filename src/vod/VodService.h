@@ -84,6 +84,8 @@ class VodService : public QObject
     Q_PROPERTY(VodModel *items READ items CONSTANT)
     // Movies and series of every playlist together, each title once (Settings).
     Q_PROPERTY(bool combine READ combine WRITE setCombine NOTIFY combineChanged)
+    // Up next: movies and episodes to play after this one (here or on the TV).
+    Q_PROPERTY(QVariantList queue READ queue NOTIFY queueChanged)
 
 public:
     VodService(UserLibrary *library, const QString &cacheDir, QObject *parent = nullptr);
@@ -141,6 +143,13 @@ public:
     // "4K" / "FHD" / "HD" / "SD" from a title's tags: 4, 3, 2, 1; 0 when it doesn't say.
     static int qualityOf(const QString &title);
 
+    QVariantList queue() const { return m_queue; }
+    // Adds a playback() descriptor (false if it's already there).
+    Q_INVOKABLE bool enqueue(const QVariantMap &descriptor);
+    Q_INVOKABLE QVariantMap takeNext();             // {} when empty
+    Q_INVOKABLE void removeFromQueue(int index);
+    Q_INVOKABLE void clearQueue();
+
     Q_INVOKABLE void ensureLoaded();       // load on first use (cache or network)
     Q_INVOKABLE void reload();             // fetch again from the server
     // Fetch details for an item in the grid (row) or by kind/id; answers
@@ -193,6 +202,7 @@ signals:
     // Marked watched / not watched by hand (for Trakt).
     void watchedByHand(const QVariantMap &descriptor, bool watched);
     void combineChanged();
+    void queueChanged();
     void playbackReady(const QVariantMap &descriptor);
     void playbackProblem(const QString &message);
 
@@ -258,6 +268,7 @@ private:
     QVector<VodParser::Category> m_ownMovieCats, m_ownSeriesCats;
     QStringList m_ownMovieFolded, m_ownSeriesFolded;
     bool m_combine = true;
+    QVariantList m_queue;
     bool m_isExtra = false;           // a helper holding another playlist's catalogue
     QString m_ownId, m_ownName;
     std::function<bool(const QString &)> m_busy;

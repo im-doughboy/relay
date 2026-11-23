@@ -12,6 +12,7 @@
 #include <QSettings>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QtDebug>
 
 namespace {
@@ -103,6 +104,15 @@ bool PhoneRemote::isLocal(const QHostAddress &peerIn)
     return peerIn.isLoopback() || peerIn.isLinkLocal() || peerIn.isUniqueLocalUnicast();
 }
 
+// A phone that isn't paired (or was forgotten in Settings): it has to pair again.
+void PhoneRemote::refused(QTcpSocket *socket, const QByteArray &token)
+{
+    noteOnce(QStringLiteral("unpaired ") + socket->peerAddress().toString(),
+             QStringLiteral("Phone remote: a phone at %1 isn't paired%2 · it shows the code screen again")
+                 .arg(socket->peerAddress().toString(), token.isEmpty() ? QString() : QStringLiteral(" (forgotten, or paired with another computer)")));
+    reply(socket, 403, "text/plain", "Pair this phone first.");
+}
+
 bool PhoneRemote::tokenValid(const QByteArray &token) const
 {
     if (token.size() < 16) return false;
@@ -129,7 +139,12 @@ void PhoneRemote::start()
         connect(m_server, &QTcpServer::newConnection, this, [this] {
             while (QTcpSocket *socket = m_server->nextPendingConnection()) {
                 connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
-                if (!isLocal(socket->peerAddress())) { socket->abort(); continue; }   // home network only
+                if (!isLocal(socket->peerAddress())) {   // home network only
+                    noteOnce(QStringLiteral("refused ") + socket->peerAddress().toString(),
+                             QStringLiteral("Phone remote: turned away %1 (not an address on a home network)").arg(socket->peerAddress().toString()));
+                    socket->abort();
+                    continue;
+                }
                 auto buffer = std::make_shared<QByteArray>();
                 connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer] {
                     buffer->append(socket->readAll());
@@ -152,10 +167,41 @@ void PhoneRemote::start()
             }
         });
     }
-    for (int i = 0; i < kPorts; ++i)
-        if (m_server->listen(QHostAddress::Any, quint16(kFirstPort + i))) break;
+    // The same address every time (the phone keeps it): 8800, waiting a few
+    // seconds if it's still taken (Relay closing after an update), and only
+    // then the next free port.
+    if (m_server->listen(QHostAddress::Any, kFirstPort)) { announce(); return; }
+    m_portTries = 0;
+    auto *retry = new QTimer(this);
+    retry->setInterval(500);
+    connect(retry, &QTimer::timeout, this, [this, retry] {
+        if (running() || !enabled()) { retry->deleteLater(); return; }
+        if (m_server->listen(QHostAddress::Any, kFirstPort) || ++m_portTries >= 16) {
+            retry->deleteLater();
+            if (!running()) {
+                qWarning().noquote() << QStringLiteral("Phone remote: port %1 is in use by another program; using the next free one (the phone needs the new address)").arg(kFirstPort);
+                for (int i = 1; i < kPorts; ++i)
+                    if (m_server->listen(QHostAddress::Any, quint16(kFirstPort + i))) break;
+            }
+            announce();
+        }
+    });
+    retry->start();
+}
+
+void PhoneRemote::announce()
+{
     if (running()) qInfo().noquote() << "Phone remote: on, at" << (url().isEmpty() ? QStringLiteral("port %1").arg(port()) : url());
     else qWarning().noquote() << "Phone remote: couldn't open a port:" << m_server->errorString();
+    emit changed();
+}
+
+void PhoneRemote::noteOnce(const QString &key, const QString &line)
+{
+    if (m_noted.contains(key)) return;
+    if (m_noted.size() > 50) m_noted.clear();
+    m_noted.insert(key);
+    qWarning().noquote() << line;
 }
 
 void PhoneRemote::stop()
@@ -227,7 +273,7 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
         return;
     }
     if (method == "POST" && path.startsWith(QLatin1String("/a/"))) {
-        if (!tokenValid(token)) { reply(socket, 403, "text/plain", "Pair this phone first."); return; }
+        if (!tokenValid(token)) { refused(socket, token); return; }
         const QString action = path.mid(3);
         if (!RemoteInput::actions().contains(action)) { reply(socket, 400, "text/plain", "Unknown button."); return; }
         emit m_remote->used(QStringLiteral("phone"));
@@ -236,7 +282,7 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
         return;
     }
     if (method == "POST" && path == QLatin1String("/text")) {
-        if (!tokenValid(token)) { reply(socket, 403, "text/plain", "Pair this phone first."); return; }
+        if (!tokenValid(token)) { refused(socket, token); return; }
         const QJsonValue text = QJsonDocument::fromJson(body).object().value(QLatin1String("text"));
         if (!text.isString()) { reply(socket, 400, "text/plain", "No text."); return; }
         if (!m_remote->setFieldText(text.toString())) { reply(socket, 409, "text/plain", "Nothing to type into."); return; }

@@ -83,6 +83,13 @@ FocusScope {
         if (d.url) multiView(d)
     }
     function playEpisode(e) { Vod.startPlayback(info, e.index, false) }
+    // Up next: after what's playing (here or on the TV).
+    function addToQueue(episodeIndex) {
+        const d = Vod.playback(info, episodeIndex, false)
+        if (!d.url) return
+        const name = d.kind === "episode" ? d.subtitle : d.title
+        message(Vod.enqueue(d) ? qsTr("Added to the queue: %1").arg(name) : qsTr("Already in the queue"))
+    }
     function toggleWatched(e) {
         const d = e ? Vod.playback(info, e.index, true) : Vod.playback(info, -1, true)
         const watched = e ? e.watched : info.watched
@@ -121,6 +128,9 @@ FocusScope {
                        label: qsTr("Source: %1 (%2 in all)").arg(best.name + (best.quality ? " · " + best.quality : "")).arg(sourceList.length) })
         }
         if (info.trailer) out.push({ id: "trailer", icon: Icons.movies, label: qsTr("Watch the trailer") })
+        out.push({ id: "queue", icon: Icons.plus,
+                   label: isSeries ? qsTr("Add %1 to the queue").arg(resumeEpisode ? code(resumeEpisode) : qsTr("the next episode"))
+                                   : qsTr("Add to the queue") + (Vod.queue.length ? "  (" + Vod.queue.length + ")" : "") })
         out.push({ id: "favorite", icon: Icons.heart, filled: !!info.favorite,
                    label: info.favorite ? qsTr("In your favorites") : qsTr("Add to favorites") })
         if (!isSeries) out.push({ id: "watched", icon: Icons.recordings, label: info.watched ? qsTr("Mark as not watched") : qsTr("Mark as watched") })
@@ -134,6 +144,7 @@ FocusScope {
         case "fromStart": playMain(true); break
         case "episodes": episodesPage.show(); break
         case "trailer": playTrailer(); break
+        case "queue": addToQueue(-1); break
         case "favorite": toggleFavorite(); break
         case "watched": toggleWatched(null); break
         case "multiview": watchInMultiView(); break
@@ -597,6 +608,7 @@ FocusScope {
                 case Qt.Key_Return:
                 case Qt.Key_Enter: if (root.episodes[currentIndex]) root.playEpisode(root.episodes[currentIndex]); break
                 case Qt.Key_W: if (root.episodes[currentIndex]) root.toggleWatched(root.episodes[currentIndex]); break
+                case Qt.Key_Q: if (root.episodes[currentIndex]) root.addToQueue(root.episodes[currentIndex].index); break
                 case Qt.Key_F: root.toggleFavorite(); break
                 case Qt.Key_Backspace: episodesPage.hide(); break
                 default: return
@@ -711,7 +723,7 @@ FocusScope {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 18
-            text: qsTr("Enter: play   ·   ← seasons   ·   W: watched   ·   Esc: back")
+            text: qsTr("Enter: play   ·   Q: add to queue   ·   ← seasons   ·   W: watched   ·   Esc: back")
             color: Theme.textMuted
             font.pixelSize: Theme.fontSmall
         }

@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QHostAddress>
 #include <QObject>
+#include <QSet>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -60,6 +61,11 @@ private:
                    const QHash<QByteArray, QByteArray> &headers, const QByteArray &body);
     void reply(QTcpSocket *socket, int status, const QByteArray &type, const QByteArray &body);
     bool tokenValid(const QByteArray &token) const;
+    void refused(QTcpSocket *socket, const QByteArray &token);
+    void announce();
+    void noteOnce(const QString &key, const QString &line);   // a problem, in the log once per phone
+    QSet<QString> m_noted;
+    int m_portTries = 0;
     void newCode();
 
     RemoteInput *m_remote;

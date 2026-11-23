@@ -178,11 +178,27 @@ Window {
         if (!Player.playCatchup(Player.currentIndex, p, 0))
             toast.show(qsTr("This channel has no catch-up"), true)
     }
+    // A movie or episode playing on the TV instead of here.
+    property bool vodOnTv: false
     function saveVodProgress() {
+        if (Player.vodActive && win.vodOnTv && Cast.active && Cast.position > 0 && Cast.duration > 0) {
+            Vod.saveProgress(Player.vod, Cast.position, Cast.duration)
+            return
+        }
         if (Player.vodActive && video.vod && video.position > 0) {
             Vod.saveProgress(Player.vod, video.position, video.duration)
             Trakt.scrobble("stop", Player.vod, win.vodPercent())
         }
+    }
+    // After a movie or episode: what's queued, else the next episode.
+    function playWhatsNext() {
+        const queued = Vod.takeNext()
+        if (queued.url) {
+            Player.playVod(queued)
+            toast.show(qsTr("Up next: %1").arg(queued.title + (queued.kind === "episode" ? " · " + queued.subtitle : "")))
+            return true
+        }
+        return Player.vod.kind === "episode" && win.playNextEpisode()
     }
     function vodPercent() { return video.duration > 0 ? 100 * video.position / video.duration : 0 }
     function playNextEpisode() {
@@ -252,7 +268,7 @@ Window {
             }
             Vod.saveProgress(Player.vod, video.duration, video.duration)   // watched
             Trakt.scrobble("stop", Player.vod, 100)
-            if (Player.vod.kind === "episode" && win.playNextEpisode()) return
+            if (win.playWhatsNext()) return
             win.leaveVod()
         }
     }
@@ -283,7 +299,7 @@ Window {
     function castTo(deviceId) {
         const source = Player.castSource()
         if (!source.url) { toast.show(qsTr("Nothing is playing"), true); return }
-        if (Player.vodActive) source.start = video.position
+        if (Player.vodActive) { source.start = win.vodOnTv ? Cast.position : video.position; win.vodOnTv = true }
         Cast.start(deviceId, source)
         // One connection to the provider: the TV's, through Relay.
         if (Player.vodActive) { if (!video.paused) video.togglePause() }
@@ -295,7 +311,26 @@ Window {
     Connections {
         target: Cast
         function onMessage(text, problem) { toast.show(text, problem) }
+        // A movie or episode played to the end on the TV: the next one goes there too.
+        function onFinished() {
+            if (!Player.vodActive) { Cast.stop(); return }
+            if (Player.vod.kind === "movie" || Player.vod.kind === "episode")
+                Vod.saveProgress(Player.vod, Math.max(1, Cast.duration), Math.max(1, Cast.duration))   // watched
+            if (win.playWhatsNext()) return
+            toast.show(qsTr("That was the end"))
+            Cast.stop()
+        }
         function onEnded(problem) {
+            // A movie that went straight to the TV (no copy here): carry on here.
+            if (Player.vodActive && win.vodOnTv && !video.vod) {
+                win.vodOnTv = false
+                video.playVod(Player.vod.url, Math.max(0, Cast.position - 3))
+                toast.show(problem ? problem + " · " + qsTr("carrying on here") : qsTr("Casting stopped · carrying on here"), problem.length > 0)
+                return
+            }
+            // Here, it picks up where the TV got to.
+            if (Player.vodActive && win.vodOnTv && video.vod && Cast.position > 5) video.seek(Cast.position - 3, false)
+            win.vodOnTv = false
             const back = Player.vodActive ? qsTr("Space plays it here") : qsTr("back to watching here")
             toast.show(problem ? problem + " · " + back : qsTr("Casting stopped · %1").arg(back), problem.length > 0)
             if (!Player.vodActive) Player.retry()
@@ -305,6 +340,7 @@ Window {
         z: 6.5   // over the movie controls and live bar, under the menu bar
         onStopRequested: win.stopCasting()
         onPickRequested: castPicker.open()
+        onNextRequested: { win.saveVodProgress(); win.playWhatsNext() }
     }
     CastPicker {
         id: castPicker
@@ -338,8 +374,18 @@ Window {
             win.playbackError = ""
             infoBar.hide()
             vodBrowser.close()
-            video.playVod(url, start)
             keyHandler.forceActiveFocus()
+            // Casting: it goes to the TV (the next episode, something from the queue…).
+            if (Cast.active && Cast.deviceId) {
+                video.stop()
+                win.vodOnTv = true
+                const source = Player.castSource()
+                source.start = start
+                Cast.start(Cast.deviceId, source)
+                return
+            }
+            win.vodOnTv = false
+            video.playVod(url, start)
         }
         function onStopRequested() { video.stop() }
         // Casting a channel: the next channel goes to the TV too.
@@ -586,7 +632,15 @@ Window {
             if (win.sleepWarning) { win.keepWatching(); ev.accepted = true; return }
             // While casting, Space and Esc work the TV.
             if (Cast.active && !(ev.modifiers & Qt.ControlModifier)) {
-                if (ev.key === Qt.Key_Space) { Cast.togglePause(); ev.accepted = true; return }
+                if (ev.key === Qt.Key_Space || ev.key === Qt.Key_MediaTogglePlayPause) { Cast.togglePause(); ev.accepted = true; return }
+                // A movie or episode on the TV: skip back and ahead there.
+                if (!Cast.live) {
+                    const step = ev.key === Qt.Key_Left || ev.key === Qt.Key_AudioRewind ? -10
+                               : ev.key === Qt.Key_Right || ev.key === Qt.Key_AudioForward ? 30
+                               : ev.key === Qt.Key_Down ? -60 : ev.key === Qt.Key_Up ? 60 : 0
+                    if (step) { Cast.seekBy(step); ev.accepted = true; return }
+                    if (ev.key === Qt.Key_N && Player.vod.kind === "episode") { win.saveVodProgress(); win.playWhatsNext(); ev.accepted = true; return }
+                }
                 if (ev.key === Qt.Key_Escape) { win.stopCasting(); ev.accepted = true; return }
             }
             if (ev.key === Keymap.keyOf("cast") && !(ev.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
@@ -847,18 +901,56 @@ Window {
     Connections {
         target: Remote
         function onAction(name) {
-            if (name === "home") { win.goHome(); return }
-            if (name === "menu") { win.openMenu(); return }
-            if (name === "search" && vodBrowser.opened && !win.showSetup) { vodBrowser.focusSearch(); return }
-            if (name === "favorites") {
-                if (win.showSetup) return
-                channelPanel.open()
-                Channels.currentGroup = Channels.favoritesGroup
-                return
-            }
+            if (name === "menu") { win.toggleMenu(); return }
+            // These go straight there from wherever you are (Settings included).
+            const jumps = ["home", "guide", "movies", "search", "favorites", "settings"]
+            if (jumps.indexOf(name) >= 0) { win.jumpTo(name); return }
             const key = Keymap.keyOf(name)
             if (key) Remote.sendKey(key)
         }
+    }
+    // Leave Settings and anything open over the picture (not a PIN prompt), then go.
+    function jumpTo(name) {
+        if (pinDialog.opened) return
+        if (win.showSetup) {
+            if (!setupScreen.canClose) return       // no playlist yet: nowhere to go
+            win.showSetup = false
+        }
+        liveMenu.close()
+        if (name === "settings") { win.openSetupGuarded(); return }
+        if (name === "home") { win.goHome(); return }
+        if (name === "search" && vodBrowser.opened) { vodBrowser.focusSearch(); return }
+        if (name === "movies") {
+            if (vodBrowser.opened) { vodBrowser.showHome(); return }
+            castPicker.close(); playerOptions.close(); shortcuts.opened = false; recordings.close()
+            if (multiView.opened) multiView.close()
+            if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
+            win.openVod(Vod.section)
+            return
+        }
+        // Guide, search, favorites belong to live TV.
+        castPicker.close(); playerOptions.close(); shortcuts.opened = false; recordings.close()
+        if (multiView.opened) multiView.close()
+        if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
+        vodBrowser.close()
+        if (name === "guide") { if (!guide.opened) win.openGuide() }
+        else if (name === "search") win.openSearch()
+        else if (name === "favorites") {
+            guide.close()
+            channelPanel.open()
+            Channels.currentGroup = Channels.favoritesGroup
+        }
+        else win.returnFocus()
+    }
+    // Menu: opens it, and closes it again.
+    function toggleMenu() {
+        if (liveMenu.opened) { liveMenu.close(); return }
+        if (playerOptions.opened) { playerOptions.close(); return }
+        if (win.showSetup) {
+            if (pinDialog.opened || !setupScreen.canClose) return
+            win.showSetup = false
+        }
+        win.openMenu()
     }
     // Home: back to live TV, whatever is open.
     function goHome() {

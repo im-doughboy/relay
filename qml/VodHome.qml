@@ -314,6 +314,19 @@ FocusScope {
             }
             e.accepted = true
         }
+        // Dragging up or down moves between rows.
+        DragHandler {
+            target: null
+            xAxis.enabled: false
+            cursorShape: Qt.ClosedHandCursor
+            property int startRow: 0
+            onActiveChanged: if (active) { startRow = rows.currentIndex; rows.forceActiveFocus() }
+            onTranslationChanged: {
+                if (!active) return
+                const r = Math.max(0, Math.min(rows.count - 1, startRow + Math.round(-translation.y / (root.cardH * 0.7))))
+                if (r !== rows.currentIndex) rows.go(r)
+            }
+        }
         // The wheel moves a row at a time (Shift: along the row).
         WheelHandler {
             property real acc: 0
@@ -547,6 +560,18 @@ FocusScope {
                 highlightMoveDuration: 220
                 header: Item { width: root.side; height: 1 }
                 footer: Item { width: root.side; height: 1 }
+                DragHandler {
+                    target: null
+                    yAxis.enabled: false
+                    cursorShape: Qt.ClosedHandCursor
+                    property int startCol: 0
+                    onActiveChanged: if (active) startCol = chipsRow.at
+                    onTranslationChanged: {
+                        if (!active) return
+                        const c = Math.max(0, Math.min(root.chips.length - 1, startCol + Math.round(-translation.x / (root.chipH * 2.6))))
+                        if (c !== chipsRow.at) rows.setCol(chipsRow.parent.entryIndex, c)
+                    }
+                }
                 delegate: Rectangle {
                     id: chip
                     required property var modelData
@@ -646,6 +671,24 @@ FocusScope {
                 highlightMoveVelocity: -1
                 highlightResizeDuration: 0
                 cacheBuffer: root.wideW * 2
+
+                // Grab and drag the posters along (any row; the selected row's
+                // card follows). A click still opens the title.
+                DragHandler {
+                    target: null
+                    yAxis.enabled: false
+                    cursorShape: Qt.ClosedHandCursor
+                    property int startCol: 0
+                    onActiveChanged: if (active) startCol = shelf.at
+                    onTranslationChanged: {
+                        if (!active) return
+                        const step = Math.round(-translation.x / (root.cardW + cards.spacing))
+                        const c = Math.max(0, Math.min(shelf.data_.items.length, startCol + step))
+                        if (c === shelf.at) return
+                        rows.setCol(shelf.row, c)
+                        if (shelf.row === rows.currentIndex) root.syncSelection()
+                    }
+                }
 
                 delegate: Item {
                     id: card

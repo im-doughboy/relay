@@ -2032,3 +2032,38 @@ void VodService::switchSource(const QVariantMap &descriptor, int sourceIndex, do
     }
     detailsOf(SourceRef{-1, id, 0}, kind, go);
 }
+
+// ---- Up next ----------------------------------------------------------------------------
+
+bool VodService::enqueue(const QVariantMap &descriptor)
+{
+    const QString key = descriptor.value(QStringLiteral("key")).toString();
+    if (descriptor.value(QStringLiteral("url")).toString().isEmpty()) return false;
+    for (const QVariant &v : std::as_const(m_queue))
+        if (!key.isEmpty() && v.toMap().value(QStringLiteral("key")).toString() == key) return false;
+    m_queue.append(descriptor);
+    emit queueChanged();
+    return true;
+}
+
+QVariantMap VodService::takeNext()
+{
+    if (m_queue.isEmpty()) return {};
+    const QVariantMap next = m_queue.takeFirst().toMap();
+    emit queueChanged();
+    return next;
+}
+
+void VodService::removeFromQueue(int index)
+{
+    if (index < 0 || index >= m_queue.size()) return;
+    m_queue.removeAt(index);
+    emit queueChanged();
+}
+
+void VodService::clearQueue()
+{
+    if (m_queue.isEmpty()) return;
+    m_queue.clear();
+    emit queueChanged();
+}

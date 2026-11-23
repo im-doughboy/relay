@@ -21,6 +21,9 @@ class CastService : public QObject
     Q_PROPERTY(QString deviceName READ deviceName NOTIFY stateChanged)
     Q_PROPERTY(QString title READ title NOTIFY stateChanged)
     Q_PROPERTY(bool live READ live NOTIFY stateChanged)
+    // How far into a movie or episode the TV is (seconds; 0 while unknown).
+    Q_PROPERTY(double position READ position NOTIFY progressChanged)
+    Q_PROPERTY(double duration READ duration NOTIFY progressChanged)
 
 public:
     explicit CastService(QObject *parent = nullptr);
@@ -33,6 +36,8 @@ public:
     QString deviceName() const { return m_device.name; }
     QString title() const { return m_title; }
     bool live() const { return m_live; }
+    double position() const { return m_position; }
+    double duration() const { return m_duration; }
 
     Q_INVOKABLE void scan();
     Q_INVOKABLE void addDevice(const QString &address);
@@ -41,6 +46,8 @@ public:
     Q_INVOKABLE void start(const QString &deviceId, const QVariantMap &source);
     Q_INVOKABLE void togglePause();
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void seek(double seconds);          // to there
+    Q_INVOKABLE void seekBy(double seconds);        // back (-) or ahead
 
     // What a receiver is told the stream is, from its address.
     static QString mimeFor(const QString &url, bool live);
@@ -50,6 +57,10 @@ signals:
     void stateChanged();
     void message(const QString &text, bool problem);
     void ended(const QString &problem);   // casting stopped (by Relay, the TV, or an error: why)
+    // A movie or episode played to the end on the TV. Casting carries on:
+    // start() the next one, or stop().
+    void finished();
+    void progressChanged();
 
 private:
     void begin(const QString &url, const QVariantMap &source);
@@ -68,6 +79,8 @@ private:
     QPointer<ChromecastClient> m_cc;
     QString m_state, m_title, m_path;
     bool m_live = false;
+    double m_position = 0, m_duration = 0;
+    void setProgress(double position, double duration);
     QString m_castUrl;
     QVariantMap m_castSource;
     bool m_triedHls = false;

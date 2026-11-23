@@ -3,6 +3,24 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.5.1
+
+- **Casting movies and episodes:**
+  - The TV's progress shows on Relay's screen (how far in, how long left), and you can **skip**:
+    ← → back 10 s / ahead 30 s, ↑ ↓ a minute, click the bar to jump, or the ⏪ ⏩ buttons
+    (the phone's and a controller's too).
+  - When an episode ends on the TV, **the next one starts on the TV** by itself.
+  - Stopping the cast carries on here from where the TV got to.
+- **A queue (Up next):** **Add to the queue** on a movie's or series' page (Q on an episode in
+  Episodes). What's queued plays next, here or on the TV, before the next episode; the cast
+  screen shows what's up next, and N skips to it.
+- **Phone remote and remotes:** Home, Guide, Movies, Search, Favorites and Settings now go
+  straight there from anywhere, Settings included. **Menu** opens the menu and closes it again.
+- **Movies & series with a mouse:** grab and drag a row of posters sideways to move along it,
+  or up and down to move between rows.
+- The phone remote keeps its address (port 8800) when Relay restarts right after an update,
+  and the log now says when a phone is turned away and why.
+
 ## 0.5.0
 
 - **Movies & series from all your playlists, as one:** with more than one playlist, their movies

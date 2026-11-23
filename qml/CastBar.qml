@@ -7,6 +7,12 @@ Item {
     id: root
     signal stopRequested()
     signal pickRequested()
+    signal nextRequested()
+    function clock(secs) {
+        secs = Math.max(0, Math.round(secs))
+        const h = Math.floor(secs / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60
+        return (h > 0 ? h + ":" + String(m).padStart(2, "0") : String(m)) + ":" + String(s).padStart(2, "0")
+    }
     visible: Cast.active
     anchors.fill: parent
 
@@ -53,15 +59,67 @@ Item {
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontSmall
             }
+            // A movie or episode: how far in, and skipping (click the bar to jump).
+            Column {
+                width: parent.width
+                spacing: 6
+                visible: !Cast.live && Cast.duration > 0
+                Item {
+                    width: parent.width
+                    height: 18
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width
+                        height: 6
+                        radius: 3
+                        color: Theme.track
+                        Rectangle {
+                            width: parent.width * Math.min(1, Cast.position / Math.max(1, Cast.duration))
+                            height: parent.height
+                            radius: 3
+                            color: Theme.accent
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: (m) => Cast.seek(Cast.duration * m.x / width)
+                    }
+                }
+                Item {
+                    width: parent.width
+                    height: posText.implicitHeight
+                    Text { id: posText; text: root.clock(Cast.position); color: Theme.textSecondary; font.pixelSize: Theme.fontSmall }
+                    Text { anchors.right: parent.right; text: "-" + root.clock(Math.max(0, Cast.duration - Cast.position)); color: Theme.textSecondary; font.pixelSize: Theme.fontSmall }
+                }
+            }
             Row {
                 anchors.horizontalCenter: parent.horizontalCenter
                 spacing: 12
                 topPadding: 10
                 BarButton {
+                    visible: !Cast.live && Cast.duration > 0
+                    icon: Icons.rewind; iconFilled: true
+                    label: qsTr("Back 10 seconds"); shortcut: "←"; showLabel: false
+                    onClicked: Cast.seekBy(-10)
+                }
+                BarButton {
                     icon: Cast.state === "paused" ? Icons.play : Icons.pause; iconFilled: true
                     label: Cast.state === "paused" ? qsTr("Play") : qsTr("Pause"); shortcut: "Space"
                     enabled: Cast.state === "playing" || Cast.state === "paused"
                     onClicked: Cast.togglePause()
+                }
+                BarButton {
+                    visible: !Cast.live && Cast.duration > 0
+                    icon: Icons.forward; iconFilled: true
+                    label: qsTr("Ahead 30 seconds"); shortcut: "→"; showLabel: false
+                    onClicked: Cast.seekBy(30)
+                }
+                BarButton {
+                    visible: !Cast.live && (Vod.queue.length > 0 || Player.vod.kind === "episode")
+                    icon: Icons.forward; iconFilled: true
+                    label: Vod.queue.length > 0 ? qsTr("Play the next in the queue") : qsTr("Next episode"); shortcut: "N"; showLabel: false
+                    onClicked: root.nextRequested()
                 }
                 BarButton {
                     icon: Icons.cast
@@ -74,6 +132,27 @@ Item {
                     label: qsTr("Stop casting"); shortcut: "Esc"
                     onClicked: root.stopRequested()
                 }
+            }
+            // Up next (the queue).
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                visible: !Cast.live && Vod.queue.length > 0
+                text: Vod.queue.length > 0
+                      ? qsTr("Up next: %1").arg(Vod.queue[0].title + (Vod.queue[0].kind === "episode" ? " · " + Vod.queue[0].subtitle : ""))
+                        + (Vod.queue.length > 1 ? "  " + qsTr("(+%1 more)").arg(Vod.queue.length - 1) : "")
+                      : ""
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall + 1
+            }
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                visible: !Cast.live && Cast.duration > 0
+                text: qsTr("← → skip back and ahead   ·   ↑ ↓ a minute   ·   Space pause")
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSmall
             }
             Text {
                 width: parent.width

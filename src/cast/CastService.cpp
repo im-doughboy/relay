@@ -80,6 +80,7 @@ void CastService::start(const QString &deviceId, const QVariantMap &source)
     m_title = source.value(QStringLiteral("title")).toString();
     m_live = source.value(QStringLiteral("live")).toBool();
     m_recoveries = 0;
+    setProgress(m_live ? 0 : source.value(QStringLiteral("start")).toDouble(), 0);
     const quint64 gen = ++m_generation;
     setState(QStringLiteral("connecting"));
     qInfo().noquote() << QStringLiteral("Cast: \"%1\" to %2 \"%3\"").arg(m_title, m_device.kind, m_device.name);
@@ -120,6 +121,8 @@ void CastService::begin(const QString &url, const QVariantMap &source)
             finish(problem);
         });
         connect(m_dlna, &DlnaRenderer::stopped, this, [this] { finish(QString()); });
+        connect(m_dlna, &DlnaRenderer::finished, this, [this] { qInfo().noquote() << "Cast: played to the end"; emit finished(); });
+        connect(m_dlna, &DlnaRenderer::progress, this, &CastService::setProgress);
     }
     // The name this TV uses for the type (Samsung is particular about it).
     const quint64 generation = m_generation;
@@ -191,6 +194,8 @@ void CastService::serve(const QString &url, const QVariantMap &source, const QSt
                 finish(problem);
             });
             connect(m_cc, &ChromecastClient::stopped, this, [this] { finish(QString()); });
+            connect(m_cc, &ChromecastClient::finished, this, [this] { qInfo().noquote() << "Cast: played to the end"; emit finished(); });
+            connect(m_cc, &ChromecastClient::progress, this, &CastService::setProgress);
         }
         const QString type = rs.asHls || hlsSource ? QStringLiteral("application/x-mpegurl")
                            : mime == QLatin1String("video/x-matroska") ? QStringLiteral("video/mp4")   // what it plays them as
@@ -214,6 +219,25 @@ void CastService::togglePause()
         setState(QStringLiteral("playing"));
     }
 }
+
+void CastService::setProgress(double position, double duration)
+{
+    if (qFuzzyCompare(position + 1, m_position + 1) && qFuzzyCompare(duration + 1, m_duration + 1)) return;
+    m_position = position;
+    if (duration > 0) m_duration = duration;
+    emit progressChanged();
+}
+
+void CastService::seek(double seconds)
+{
+    if (!active() || m_live) return;
+    seconds = qMax(0.0, m_duration > 0 ? qMin(seconds, m_duration - 5) : seconds);
+    if (m_cc) m_cc->seek(seconds);
+    if (m_dlna) m_dlna->seek(seconds);
+    setProgress(seconds, m_duration);   // shown at once; the TV confirms
+}
+
+void CastService::seekBy(double seconds) { seek(m_position + seconds); }
 
 void CastService::stop()
 {
