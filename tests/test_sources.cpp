@@ -19,7 +19,9 @@
 #include "app/Gamepads.h"
 #include "app/PhoneRemote.h"
 #ifdef RELAY_HAVE_SDL
-# define SDL_MAIN_HANDLED
+# ifndef SDL_MAIN_HANDLED
+#  define SDL_MAIN_HANDLED
+# endif
 # include <SDL.h>
 #endif
 #include "cast/CastDevices.h"
