@@ -381,7 +381,7 @@ Item {
         Repeater {
             model: trackMenu.type === "sub" ? [{ id: -1, label: qsTr("Off"), selected: !trackMenu.items.some(t => t.selected) }].concat(trackMenu.items)
                                             : trackMenu.items
-            delegate: MenuItem {
+            delegate: RelayMenuItem {
                 text: (modelData.selected ? "✓  " : "     ") + modelData.label
                 onTriggered: root.video.setTrack(trackMenu.type, modelData.id)
             }

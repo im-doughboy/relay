@@ -598,10 +598,29 @@ ChromecastClient::ChromecastClient(const CastDevice &device, QObject *parent)
     });
     connect(m_socket, &QSslSocket::readyRead, this, [this] {
         m_buffer.append(m_socket->readAll());
-        for (const Message &m : unframe(m_buffer)) onMessage(m);
+        const auto messages = unframe(m_buffer);
+        if (!messages.isEmpty()) m_answered = true;
+        for (const Message &m : messages) onMessage(m);
     });
     connect(m_socket, &QSslSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
-        if (m_socket->error() == QAbstractSocket::RemoteHostClosedError && m_sawPlaying) { emit stopped(); return; }
+        const auto error = m_socket->error();
+        if (error == QAbstractSocket::RemoteHostClosedError && m_sawPlaying) { emit stopped(); return; }
+        qWarning().noquote() << "Cast: Chromecast connection:" << m_socket->errorString() << (m_answered ? "(after it answered)" : "(before any answer)");
+        if (!m_answered) {
+            // Something at that address, but not speaking Cast: a Fire TV, a Roku, a computer…
+            if (error == QAbstractSocket::RemoteHostClosedError || error == QAbstractSocket::ConnectionRefusedError
+                    || error == QAbstractSocket::SslHandshakeFailedError) {
+                emit failed(tr("That device doesn't answer like a Chromecast. Fire TV and Roku devices don't support "
+                               "Chromecast casting (a Fire TV can, with a receiver app such as AirScreen)."));
+                return;
+            }
+            if (error == QAbstractSocket::SocketTimeoutError || error == QAbstractSocket::HostNotFoundError
+                    || error == QAbstractSocket::NetworkError) {
+                emit failed(tr("Nothing answered at %1. Check the address, and that it's on and on this network.")
+                                .arg(m_device.address.toString()));
+                return;
+            }
+        }
         emit failed(tr("Couldn't talk to the Chromecast: %1").arg(m_socket->errorString()));
     });
     m_heartbeat.setInterval(5000);

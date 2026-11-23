@@ -1883,6 +1883,27 @@ private slots:
         r->deleteLater();
     }
 
+    // A Fire TV (or anything else) added as a Chromecast: say what it is.
+    void cast_not_a_chromecast()
+    {
+        QTcpServer fireTv;
+        QVERIFY(fireTv.listen(QHostAddress::LocalHost));
+        connect(&fireTv, &QTcpServer::newConnection, this, [&] {
+            QTcpSocket *s = fireTv.nextPendingConnection();
+            s->disconnectFromHost();
+        });
+        CastDevice d;
+        d.kind = QStringLiteral("chromecast");
+        d.address = QHostAddress::LocalHost;
+        d.port = fireTv.serverPort();
+        ChromecastClient cc(d);
+        QSignalSpy failed(&cc, &ChromecastClient::failed);
+        cc.load(QStringLiteral("http://127.0.0.1/x"), QStringLiteral("T"), QStringLiteral("video/mp4"), false, 0);
+        QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 10000);
+        QVERIFY2(failed.first().first().toString().contains("doesn't answer like a Chromecast"),
+                 qPrintable(failed.first().first().toString()));
+    }
+
     void cast_relay()
     {
         // Playlists are rewritten so every part comes through Relay.

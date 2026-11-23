@@ -14,6 +14,7 @@ FocusScope {
     signal closed()
     signal message(string text)
     signal searchRequested()
+    signal multiViewRequested(int globalIndex)
     signal pinRequested(string reason, var onOk)
 
     function open() {
@@ -199,92 +200,96 @@ FocusScope {
     RelayMenu {
         id: channelMenu
         property int row: -1
-        MenuItem {
+        RelayMenuItem {
             text: channelMenu.row >= 0 && Channels.isFavorite(Channels.globalIndexAt(channelMenu.row))
                   ? qsTr("Remove from Favorites") : qsTr("Add to Favorites")
             onTriggered: root.toggleFavoriteRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("Favorites lists…")
             onTriggered: root.listsRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             visible: Channels.isListGroup(Channels.currentGroup)
             height: visible ? implicitHeight : 0
             text: qsTr("Remove from this list")
             onTriggered: root.removeFromListRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("Hide channel")
             onTriggered: root.hideRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             text: (Parental.revision, channelMenu.row >= 0 && Parental.isChannelLocked(Channels.globalIndexAt(channelMenu.row)))
                   ? qsTr("Unlock channel") : qsTr("Lock channel (PIN)")
             onTriggered: root.toggleLockRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("Rename…")
             onTriggered: root.renameRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("Guide listings…")
             onTriggered: root.guideRow(channelMenu.row)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: Channels.currentGroup !== Channels.allGroup && Channels.currentGroup !== Channels.recentGroup && channelMenu.row > 0
             text: qsTr("Move up")
             onTriggered: root.moveRow(channelMenu.row, -1)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: Channels.currentGroup !== Channels.allGroup && Channels.currentGroup !== Channels.recentGroup && channelMenu.row < channelList.count - 1
             text: qsTr("Move down")
             onTriggered: root.moveRow(channelMenu.row, 1)
         }
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("Watch")
             onTriggered: root.tuneRow(channelMenu.row)
+        }
+        RelayMenuItem {
+            text: qsTr("Watch in multi-view")
+            onTriggered: root.multiViewRequested(Channels.globalIndexAt(channelMenu.row))
         }
     }
     RelayMenu {
         id: groupMenu
         property int group: -1
         readonly property bool isList: (Channels.groups, Channels.isListGroup(group))
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("New favorites list…")
             onTriggered: root.newList()
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup
             text: groupMenu.isList ? qsTr("Delete list") : qsTr("Hide group")
             onTriggered: groupMenu.isList ? root.deleteListAt(groupMenu.group) : root.hideGroupAt(groupMenu.group)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup
             text: qsTr("Rename…")
             onTriggered: root.renameGroupAt(groupMenu.group)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup && !groupMenu.isList
             text: (Parental.revision, Channels.isGroupLocked(groupMenu.group)) ? qsTr("Unlock group") : qsTr("Lock group (PIN)")
             onTriggered: root.toggleLockGroup(groupMenu.group)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup + 1
             text: qsTr("Move up")
             onTriggered: root.moveGroupAt(groupMenu.group, -1)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup && groupMenu.group < Channels.groups.length - 1
             text: qsTr("Move down")
             onTriggered: root.moveGroupAt(groupMenu.group, 1)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup && !groupMenu.isList
             text: qsTr("Sort channels A–Z")
             onTriggered: Channels.sortGroup(groupMenu.group)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: groupMenu.group > Channels.allGroup && !groupMenu.isList
             text: qsTr("Reset channel order")
             onTriggered: Channels.resetGroupOrder(groupMenu.group)

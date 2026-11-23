@@ -166,4 +166,5 @@ private:
     int m_mediaSession = -1;
     QJsonObject m_pendingLoad;
     bool m_sawPlaying = false;
+    bool m_answered = false;   // it spoke Cast at least once
 };

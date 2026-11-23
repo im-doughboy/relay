@@ -34,6 +34,7 @@ FocusScope {
     // Tiles: { pid, key } — the playlist and the channel key. Tiles can come
     // from any playlist; the others' channel lists load in the background.
     ListModel { id: tiles }
+    readonly property int tileCount: tiles.count
 
     function isActive(pid) { return pid === Settings.activeId }
     function playlistName(pid) {

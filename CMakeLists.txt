@@ -132,6 +132,7 @@ set(RELAY_QML_FILES
     qml/ChannelLogo.qml
     qml/Guide.qml
     qml/RelayMenu.qml
+    qml/RelayMenuItem.qml
     qml/HiddenManager.qml
     qml/Search.qml
     qml/RenameDialog.qml

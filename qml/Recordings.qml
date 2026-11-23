@@ -349,12 +349,12 @@ FocusScope {
     RelayMenu {
         id: itemMenu
         property var target: ({})
-        MenuItem {
+        RelayMenuItem {
             text: qsTr("Play")
             enabled: itemMenu.target.status === "done" || itemMenu.target.status === "recording"
             onTriggered: root.activate(list.currentIndex)
         }
-        MenuItem {
+        RelayMenuItem {
             text: itemMenu.target.status === "recording" ? qsTr("Stop recording")
                 : itemMenu.target.status === "scheduled" ? qsTr("Cancel") : qsTr("Delete")
             onTriggered: {

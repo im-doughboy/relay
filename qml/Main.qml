@@ -68,6 +68,17 @@ Window {
         pip.close()                      // its connection is needed for tiles too
         multiView.open(Player.currentIndex)
     }
+    // Multi-view with this channel next to the one on now (channel list,
+    // right-click). Up to four: a full set swaps out the last tile.
+    function openMultiViewWith(globalIndex) {
+        if (globalIndex < 0) { openMultiView(); return }
+        if (Parental.blocked(globalIndex)) { toast.show(qsTr("That channel is locked"), true); return }
+        openMultiView()
+        if (globalIndex === Player.currentIndex) return
+        const key = Channels.keyAt(globalIndex)
+        if (multiView.tileCount < multiView.maxTiles) multiView.setTile(-1, Settings.activeId, key)
+        else multiView.setTile(multiView.tileCount - 1, Settings.activeId, key)
+    }
     // W: pin the channel being watched in a corner and pick another for the
     // big picture (again: close it). In a movie it pins the live channel.
     function togglePip() {
@@ -462,7 +473,7 @@ Window {
             onClicked: (e) => {
                 if (win.sleepWarning) { win.keepWatching(); return }
                 if (Player.vodActive) { if (e.button === Qt.RightButton || vodOsd.shown) video.togglePause(); vodOsd.show(); return }
-                if (e.button === Qt.RightButton) infoBar.toggle()
+                if (e.button === Qt.RightButton) liveMenu.popup()
                 else if (channelPanel.opened) channelPanel.close()
                 else channelPanel.open()
             }
@@ -801,6 +812,31 @@ Window {
         onMessage: (text) => toast.show(text)
         onSearchRequested: win.openSearch()
         onPinRequested: (reason, ok) => win.requestPin(reason, ok)
+        onMultiViewRequested: (globalIndex) => { channelPanel.close(); win.openMultiViewWith(globalIndex) }
+    }
+
+    // Right-click on the live picture.
+    RelayMenu {
+        id: liveMenu
+        // Back to the picture's keys, unless the choice opened something that has them now.
+        onClosed: Qt.callLater(() => {
+            if (!multiView.opened && !guide.opened && !channelPanel.opened && !castPicker.opened && !pip.active)
+                win.returnFocus()
+        })
+        RelayMenuItem { text: qsTr("Channel info"); onTriggered: infoBar.toggle() }
+        RelayMenuItem { text: qsTr("Channel list"); onTriggered: channelPanel.open() }
+        RelayMenuItem { text: qsTr("TV guide"); onTriggered: win.openGuide() }
+        RelayMenuItem { text: qsTr("Multi-view"); enabled: Player.hasChannel; onTriggered: win.openMultiView() }
+        RelayMenuItem { text: pip.active ? qsTr("Close picture-in-picture") : qsTr("Picture-in-picture"); enabled: Player.hasChannel; onTriggered: win.togglePip() }
+        RelayMenuItem { text: Cast.active ? qsTr("Casting…") : qsTr("Cast to a TV…"); onTriggered: castPicker.open() }
+        RelayMenuItem {
+            text: Player.currentIndex >= 0 && Channels.isFavorite(Player.currentIndex) ? qsTr("Remove from Favorites") : qsTr("Add to Favorites")
+            enabled: Player.hasChannel
+            onTriggered: {
+                const fav = Channels.toggleFavorite(Player.currentIndex)
+                toast.show(fav ? qsTr("Added to Favorites") : qsTr("Removed from Favorites"))
+            }
+        }
     }
 
     VodBrowser {

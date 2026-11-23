@@ -205,7 +205,7 @@ FocusScope {
                     id: sortMenu
                     Repeater {
                         model: Vod.sortNames
-                        delegate: MenuItem {
+                        delegate: RelayMenuItem {
                             text: (index === Vod.sort ? "✓  " : "     ") + modelData
                             onTriggered: { Vod.sort = index; grid.forceActiveFocus() }
                         }
@@ -460,12 +460,12 @@ FocusScope {
     RelayMenu {
         id: itemMenu
         property bool favorite: false
-        MenuItem { text: qsTr("Open"); onTriggered: root.openRow(grid.currentIndex) }
-        MenuItem {
+        RelayMenuItem { text: qsTr("Open"); onTriggered: root.openRow(grid.currentIndex) }
+        RelayMenuItem {
             text: itemMenu.favorite ? qsTr("Remove from favorites") : qsTr("Add to favorites")
             onTriggered: root.toggleFavorite(grid.currentIndex)
         }
-        MenuItem {
+        RelayMenuItem {
             enabled: Vod.category === "continue"
             height: enabled ? implicitHeight : 0
             visible: enabled
