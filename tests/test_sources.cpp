@@ -14,6 +14,7 @@
 #include "vod/Tmdb.h"
 #include "app/Trakt.h"
 #include "app/Updater.h"
+#include "app/RemoteInput.h"
 #include "cast/CastDevices.h"
 #include "cast/CastRelay.h"
 #include "cast/HlsJoiner.h"
@@ -1902,6 +1903,27 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 10000);
         QVERIFY2(failed.first().first().toString().contains("doesn't answer like a Chromecast"),
                  qPrintable(failed.first().first().toString()));
+    }
+
+    // Remotes, controllers and the phone: one set of actions.
+    void remote_actions()
+    {
+        QCOMPARE(RemoteInput::keyFor("ok"), int(Qt::Key_Return));
+        QCOMPARE(RemoteInput::keyFor("back"), int(Qt::Key_Escape));
+        QCOMPARE(RemoteInput::keyFor("chup"), int(Qt::Key_ChannelUp));
+        QCOMPARE(RemoteInput::keyFor("rewind"), int(Qt::Key_AudioRewind));
+        QCOMPARE(RemoteInput::keyFor("guide"), 0);   // the user's key: QML decides
+        QCOMPARE(RemoteInput::actionForRemoteKey(Qt::Key_Back), QString("back"));
+        QCOMPARE(RemoteInput::actionForRemoteKey(Qt::Key_HomePage), QString("home"));
+        QCOMPARE(RemoteInput::actionForRemoteKey(Qt::Key_Menu), QString("menu"));
+        QCOMPARE(RemoteInput::actionForRemoteKey(Qt::Key_A), QString());
+        RemoteInput r;
+        QSignalSpy spy(&r, &RemoteInput::action);
+        r.trigger("guide");
+        r.trigger("ok");   // a key, not an action()
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.first().first().toString(), QString("guide"));
+        QVERIFY(RemoteInput::actions().contains("home"));
     }
 
     void cast_relay()

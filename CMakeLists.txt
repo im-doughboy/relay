@@ -65,6 +65,7 @@ add_library(relay_core STATIC
     src/app/Session.h              src/app/Session.cpp
     src/app/Trakt.h               src/app/Trakt.cpp
     src/app/Updater.h             src/app/Updater.cpp
+    src/app/RemoteInput.h         src/app/RemoteInput.cpp
     src/cast/TsSegmenter.h        src/cast/TsSegmenter.cpp
     src/cast/CastRelay.h          src/cast/CastRelay.cpp
     src/cast/HlsJoiner.h          src/cast/HlsJoiner.cpp

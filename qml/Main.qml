@@ -499,8 +499,8 @@ Window {
             case Qt.Key_Up: vodOsd.seekBy(60); break
             case Qt.Key_PageDown: vodOsd.seekBy(-600); break
             case Qt.Key_PageUp: vodOsd.seekBy(600); break
-            case Qt.Key_MediaRewind: vodOsd.seekBy(-30); break
-            case Qt.Key_MediaFastForward: vodOsd.seekBy(30); break
+            case Qt.Key_AudioRewind: vodOsd.seekBy(-30); break
+            case Qt.Key_AudioForward: vodOsd.seekBy(30); break
             case Qt.Key_Home: vodOsd.seekTo(0); break
             case Qt.Key_End:
                 if (Player.vod.kind === "catchup") win.leaveVod()
@@ -596,7 +596,7 @@ Window {
             const shift = e.modifiers & Qt.ShiftModifier
             const liveSeek = (shift && e.key === Qt.Key_Left) || e.key === Qt.Key_Comma ? -10
                            : (shift && e.key === Qt.Key_Right) || e.key === Qt.Key_Period ? 10
-                           : e.key === Qt.Key_MediaRewind ? -30 : e.key === Qt.Key_MediaFastForward ? 30 : 0
+                           : e.key === Qt.Key_AudioRewind ? -30 : e.key === Qt.Key_AudioForward ? 30 : 0
             if (liveSeek) {
                 video.seekLive(liveSeek)
                 liveBar.flash()
@@ -813,6 +813,40 @@ Window {
         onSearchRequested: win.openSearch()
         onPinRequested: (reason, ok) => win.requestPin(reason, ok)
         onMultiViewRequested: (globalIndex) => { channelPanel.close(); win.openMultiViewWith(globalIndex) }
+    }
+
+    // Remote buttons with a meaning of their own (remotes, controllers, the
+    // phone). Most become the key the user has for them.
+    Connections {
+        target: Remote
+        function onAction(name) {
+            if (name === "home") { win.goHome(); return }
+            if (name === "menu") { win.openMenu(); return }
+            if (name === "favorites") {
+                if (win.showSetup) return
+                channelPanel.open()
+                Channels.currentGroup = Channels.favoritesGroup
+                return
+            }
+            const key = Keymap.keyOf(name)
+            if (key) Remote.sendKey(key)
+        }
+    }
+    // Home: back to live TV, whatever is open.
+    function goHome() {
+        if (pinDialog.opened || win.showSetup) return
+        castPicker.close(); playerOptions.close(); search.close(); shortcuts.opened = false
+        guide.close(); channelPanel.close(); recordings.close()
+        if (multiView.opened) multiView.close()
+        if (Player.vodActive) { saveVodProgress(); Player.stopVod() }
+        vodBrowser.close()
+        returnFocus()
+    }
+    // Menu: what right-click offers there.
+    function openMenu() {
+        if (Player.vodActive) { vodOsd.show(); openPlayerOptions(); return }
+        if (guide.opened || channelPanel.opened || vodBrowser.opened || multiView.opened || win.showSetup) return
+        liveMenu.popup(win.width / 2 - 130, win.height / 2 - 150)
     }
 
     // Right-click on the live picture.

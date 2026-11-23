@@ -4,6 +4,7 @@
 #include "app/Session.h"
 #include "app/Trakt.h"
 #include "app/Updater.h"
+#include "app/RemoteInput.h"
 #include "cast/CastService.h"
 #include "app/UserLibrary.h"
 #include "app/Parental.h"
@@ -208,6 +209,10 @@ int main(int argc, char *argv[])
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Vod", vod);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Trakt", trakt);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Updates", new Updater(&app));
+    // Remotes, game controllers and the phone remote all come in here.
+    auto *remote = new RemoteInput(&app);
+    app.installEventFilter(remote);
+    qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Remote", remote);
     auto *cast = new CastService(&app);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Cast", cast);
     qmlRegisterSingletonInstance("Relay.Core", 1, 0, "Catchup", catchup);
