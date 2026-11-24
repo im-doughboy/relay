@@ -95,28 +95,52 @@ const char *audioCodecName(AVCodecID id)
     }
 }
 
-std::string loadPayload(const FeedConfig &cfg, const char *vcodec, const char *acodec,
+// Different firmware wants slightly different load settings, so the spike
+// tries a few known shapes in turn and logs which one the TV accepts.
+struct Variant {
+    const char *name;
+    int sizes;        // 0 none, 1 width/height + whole-number fps
+    const char *contents; // transmission contentsType, or nullptr to leave out
+    bool window;      // pass the exported window id
+    bool buffering;   // pass bufferingCtrInfo
+};
+const Variant kVariants[] = {
+    {"1 sizes, LIVE, window", 1, "LIVE", true, true},
+    {"2 no sizes, LIVE, window", 0, "LIVE", true, true},
+    {"3 sizes, WEBRTC, window", 1, "WEBRTC", true, true},
+    {"4 minimal, window", 0, nullptr, true, false},
+    {"5 sizes, LIVE, no window", 1, "LIVE", false, true},
+    {"6 minimal, no window", 0, nullptr, false, false},
+};
+const int kVariantCount = sizeof kVariants / sizeof kVariants[0];
+
+std::string loadPayload(const FeedConfig &cfg, const Variant &v, const char *vcodec, const char *acodec,
                         const AVCodecParameters *vp, const AVRational &fps)
 {
-    char es[512];
-    snprintf(es, sizeof es,
-             "\"esInfo\":{\"ptsToDecode\":0,\"seperatedPTS\":true,\"pauseAtDecodeTime\":true,"
-             "\"videoWidth\":%d,\"videoHeight\":%d,\"videoFpsValue\":%d,\"videoFpsScale\":%d}",
-             vp->width, vp->height, fps.num > 0 ? fps.num : 25, fps.den > 0 ? fps.den : 1);
+    std::string es = "\"esInfo\":{\"ptsToDecode\":0,\"seperatedPTS\":true,\"pauseAtDecodeTime\":true";
+    if (v.sizes) {
+        // A whole number: 60000/1001 read as "60000 fps" can exhaust the decoder budget.
+        int f = (fps.num > 0 && fps.den > 0) ? (int)((double)fps.num / fps.den + 0.5) : 30;
+        es += ",\"videoWidth\":" + std::to_string(vp->width) + ",\"videoHeight\":" + std::to_string(vp->height)
+            + ",\"videoFpsValue\":" + std::to_string(f) + ",\"videoFpsScale\":1";
+    }
+    es += "}";
     std::string codec = std::string("\"codec\":{\"video\":\"") + vcodec + "\"";
     if (acodec) codec += std::string(",\"audio\":\"") + acodec + "\"";
     codec += "}";
     std::string p = "{\"args\":[{\"mediaTransportType\":\"BUFFERSTREAM\",\"option\":{";
     p += "\"appId\":\"" + cfg.appId + "\",";
-    if (!cfg.windowId.empty()) p += "\"windowId\":\"" + cfg.windowId + "\",";
-    p += "\"externalStreamingInfo\":{\"contents\":{" + codec + "," + es + ",\"format\":\"RAW\"},"
-         "\"bufferingCtrInfo\":{\"bufferMaxLevel\":0,\"bufferMinLevel\":0,\"preBufferByte\":0,"
-         "\"qBufferLevelAudio\":0,\"qBufferLevelVideo\":0,"
-         "\"srcBufferLevelAudio\":{\"maximum\":2097152,\"minimum\":1},"
-         "\"srcBufferLevelVideo\":{\"maximum\":8388608,\"minimum\":1}}},";
-    p += "\"transmission\":{\"contentsType\":\"LIVE\"},";
+    if (v.window && !cfg.windowId.empty()) p += "\"windowId\":\"" + cfg.windowId + "\",";
+    p += "\"externalStreamingInfo\":{\"contents\":{" + codec + "," + es + ",\"format\":\"RAW\"}";
+    if (v.buffering)
+        p += ",\"bufferingCtrInfo\":{\"bufferMaxLevel\":0,\"bufferMinLevel\":0,\"preBufferByte\":0,"
+             "\"qBufferLevelAudio\":0,\"qBufferLevelVideo\":0,"
+             "\"srcBufferLevelAudio\":{\"maximum\":2097152,\"minimum\":1},"
+             "\"srcBufferLevelVideo\":{\"maximum\":8388608,\"minimum\":1}}";
+    p += "},";
+    if (v.contents) p += std::string("\"transmission\":{\"contentsType\":\"") + v.contents + "\"},";
     p += std::string("\"needAudio\":") + (acodec ? "true" : "false") + ",";
-    p += "\"lowDelayMode\":false,\"queryPosition\":true}}]}";
+    p += "\"queryPosition\":true}}]}";
     return p;
 }
 
@@ -166,8 +190,18 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     if (avformat_find_stream_info(fmt, nullptr) < 0) hooks.log("stream info incomplete, carrying on");
     hooks.log(std::string("container ") + fmt->iformat->name + ", " + std::to_string(fmt->nb_streams) + " streams");
 
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        const AVCodecParameters *p = fmt->streams[i]->codecpar;
+        hooks.log("stream " + std::to_string(i) + ": " + (av_get_media_type_string(p->codec_type) ? av_get_media_type_string(p->codec_type) : "?")
+                  + " " + avcodec_get_name(p->codec_id) + " " + std::to_string(p->sample_rate) + " Hz");
+    }
     int vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    int ai = cfg.audio ? av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, vi, nullptr, 0) : -1;
+    int ai = -1;
+    // av_find_best_stream skips audio it can't describe (no decoders are built
+    // in), so pick the first audio stream with a codec the TV knows.
+    for (unsigned i = 0; cfg.audio && i < fmt->nb_streams && ai < 0; i++)
+        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO
+            && audioCodecName(fmt->streams[i]->codecpar->codec_id)) ai = (int)i;
     if (vi < 0) { hooks.status(3, "No video in this stream", ""); avformat_close_input(&fmt); return; }
     AVStream *vs = fmt->streams[vi];
     AVStream *as = ai >= 0 ? fmt->streams[ai] : nullptr;
@@ -199,22 +233,38 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     }
 
     StarfishMediaAPIs *sf = nullptr;
-    bool withAudio = acodec != nullptr;
-    for (int attempt = 0; attempt < 2 && !quit; attempt++) {
+    bool withAudio = false;
+    auto tryLoad = [&](const Variant &v, bool audio) -> bool {
         sf = new StarfishMediaAPIs(cfg.appId.c_str());
-        std::string payload = loadPayload(cfg, vcodec, withAudio ? acodec : nullptr, vs->codecpar, vs->avg_frame_rate);
-        hooks.log("starfish load " + payload);
+        std::string payload = loadPayload(cfg, v, vcodec, audio ? acodec : nullptr, vs->codecpar, vs->avg_frame_rate);
+        hooks.log(std::string("try variant ") + v.name + (audio ? " + audio" : "") + ": " + payload);
         st.loadState = 0;
         bool ok = sf->Load(payload.c_str(), onEvent, &st);
-        hooks.log(std::string("starfish load returned ") + (ok ? "true" : "false"));
-        // Some firmware sends LOADCOMPLETED, others just accept data after Load.
-        for (int i = 0; ok && i < 50 && st.loadState == 0 && !quit; i++)
+        // Some firmware sends LOADCOMPLETED, others just accept data after Load;
+        // a refusal (e.g. 601) arrives within a second.
+        for (int i = 0; ok && i < 30 && st.loadState == 0 && !quit; i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (ok && st.loadState != 2) break;
-        hooks.log("load failed" + std::string(withAudio ? ", trying video only" : ""));
+        if (ok && st.loadState != 2) {
+            hooks.log(std::string("variant ") + v.name + (audio ? " + audio" : "") + " ACCEPTED");
+            return true;
+        }
+        hooks.log(std::string("variant ") + v.name + " refused");
         sf->Unload(); delete sf; sf = nullptr;
-        if (!withAudio) break;
-        withAudio = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        return false;
+    };
+    int first = 0, last = kVariantCount - 1;
+    if (cfg.variant > 0 && cfg.variant <= kVariantCount) first = last = cfg.variant - 1;
+    for (int i = first; i <= last && !sf && !quit; i++) {
+        if (!tryLoad(kVariants[i], false)) continue;
+        if (acodec) {
+            // Video works with this shape; now see whether sound can join it.
+            sf->Unload(); delete sf; sf = nullptr;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (tryLoad(kVariants[i], true)) { withAudio = true; break; }
+            hooks.log("audio refused, playing video only");
+            tryLoad(kVariants[i], false);
+        }
     }
     if (!sf) { hooks.status(3, "The TV player refused the stream", ""); if (bsf) av_bsf_free(&bsf); avformat_close_input(&fmt); return; }
     control = sf;

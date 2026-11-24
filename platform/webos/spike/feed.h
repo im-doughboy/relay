@@ -10,6 +10,7 @@ struct FeedConfig {
     std::string appId;
     std::string windowId;
     bool audio = true;
+    int variant = 0; // 0 = try them all
 };
 
 struct FeedHooks {

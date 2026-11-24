@@ -263,7 +263,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.5, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.6, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -334,6 +334,7 @@ int main(int argc, char **argv)
                 fc.url = stream; fc.name = name; fc.appId = kAppId; fc.windowId = windowId;
                 fc.audio = conf["audio"] != "0";
                 if (conf.count("ua")) fc.userAgent = conf["ua"];
+                if (conf.count("variant")) fc.variant = atoi(conf["variant"].c_str());
                 probeHttp(stream, fc.userAgent);
                 FeedHooks hooks;
                 hooks.log = [](const std::string &m) { spikeLog("%s", m.c_str()); };
