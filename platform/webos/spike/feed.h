@@ -14,6 +14,7 @@ struct FeedConfig {
     std::string backend = "auto";
     std::string pace = "dts";
     int audioDelayMs = 0;
+    std::string test; // A-D: stick to one NDL feeding test; empty = cycle
 };
 
 struct FeedHooks {

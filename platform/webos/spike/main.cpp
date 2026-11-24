@@ -12,6 +12,7 @@
 //   ua=VLC/3.0                user agent sent to the provider (default Relay/0.5.2)
 //   audiodelay=-150           NDL: move the sound against the picture, in ms (negative = earlier)
 //   pace=pts                  NDL: pace video by display time instead of decode time
+//   test=C                    NDL: stick to one feeding test (A-D) instead of cycling
 //   audio=0                   feed mode: video only
 //   backend=ndl               ndl (default), smp (Starfish), or auto (Starfish, then NDL)
 //   window=1                  1 = hand the video an exported window (webOS 5+)
@@ -266,7 +267,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.9, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.10, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -345,6 +346,7 @@ int main(int argc, char **argv)
                 fc.audio = conf["audio"] != "0";
                 if (conf.count("ua")) fc.userAgent = conf["ua"];
                 if (conf.count("pace")) fc.pace = conf["pace"];
+                if (conf.count("test")) fc.test = conf["test"];
                 if (conf.count("audiodelay")) fc.audioDelayMs = atoi(conf["audiodelay"].c_str());
                 if (conf.count("variant")) fc.variant = atoi(conf["variant"].c_str());
                 fc.backend = conf.count("backend") ? conf["backend"] : "ndl"; // NDL works on webOS 10; "auto" also tries Starfish first
@@ -411,7 +413,7 @@ int main(int argc, char **argv)
                                     : SDL_Color{60, 90, 200, 220};
         SDL_Rect bar{60, 900, 1800, 120};
         // Keep the bar small while playing so the video shows.
-        if (g_state == 2 && SDL_GetTicks() - start > 8000) bar = {60, 1000, 600, 50};
+        if (g_state == 2 && SDL_GetTicks() - start > 8000) bar = {60, 1000, 900, 50};
         SDL_SetRenderDrawColor(ren, c.r, c.g, c.b, c.a);
         SDL_RenderFillRect(ren, &bar);
         if (dropped > 0) st += "  (dropped " + std::to_string(dropped.load()) + ")";

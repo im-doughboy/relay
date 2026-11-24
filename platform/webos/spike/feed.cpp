@@ -314,15 +314,41 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
         auto t0 = std::chrono::steady_clock::now();
         auto lastReport = t0;
         const int64_t leadUs = 300000; // feed this far ahead of the picture
-        // Waits until a timestamp is due. NDL plays whatever it gets straight
-        // away, so feeding has to follow the stream's own clock. After a
-        // network stall, the clock moves on instead of bursting to catch up.
+
+        // The picture was jumpy, so this build cycles through four ways of
+        // feeding the TV, 25 s each, labelled on screen, to see which is smooth:
+        //   A video only, paced by the stream clock
+        //   B sound + video, paced
+        //   C sound + video, fed as fast as the TV's buffers take it (TV keeps time)
+        //   D video only, fed as fast as the TV's buffers take it
+        struct Mode { char id; const char *label; bool audio; bool paced; };
+        const Mode modes[] = {
+            {'A', "Test A: video only, paced", false, true},
+            {'B', "Test B: sound + video, paced", true, true},
+            {'C', "Test C: sound + video, TV keeps time", true, false},
+            {'D', "Test D: video only, TV keeps time", false, false},
+        };
+        int modeIx = 0;
+        if (!cfg.test.empty()) for (int i = 0; i < 4; i++) if (modes[i].id == toupper(cfg.test[0])) modeIx = i;
+        bool cycle = cfg.test.empty();
+        Mode mode = modes[modeIx];
+        bool waitKey = false;
+        auto modeStart = std::chrono::steady_clock::now();
+        hooks.log(std::string("mode ") + mode.label);
         // Waits until a stream time is due. NDL shows frames as soon as it has
         // decoded them, so feeding must follow the stream's clock. Video is
         // paced by decode time (DTS): paced by display time, B-frames arrive in
         // bursts and the picture stutters. After a stall, or a jump in the
         // stream's timestamps, the clock is re-set instead of bursting or
         // freezing.
+        // When the TV keeps time: wait only while its buffers are full.
+        auto throttle = [&](bool audio) {
+            for (int i = 0; i < 400 && !quit; i++) {
+                if (audio) { int q = ndl_audio_queued_ms(); if (q < 0 || q < 400) return; }
+                else { int q = ndl_video_queue(); if (q < 0) { return; } if (q < 8) return; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        };
         auto pace = [&](int64_t rel) {
             auto due = t0 + std::chrono::microseconds(rel + leadUs);
             auto now = std::chrono::steady_clock::now();
@@ -359,6 +385,7 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
         int logged = 0;
         auto playVideo = [&](AVPacket *p) {
             int64_t rel;
+            if (waitKey) { if (!(p->flags & AV_PKT_FLAG_KEY)) return; waitKey = false; }
             if (!relTime(p, vs, rel)) return;
             int64_t dec = p->dts != AV_NOPTS_VALUE ? toRel(p->dts, vs) : rel;
             if (logged < 12) {
@@ -366,9 +393,9 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
                 hooks.log("video packet dts " + std::to_string(dec / 1000) + " ms, pts " + std::to_string(rel / 1000)
                           + " ms" + ((p->flags & AV_PKT_FLAG_KEY) ? " key" : ""));
             }
-            pace(cfg.pace == "pts" ? rel : dec);
+            if (mode.paced) pace(cfg.pace == "pts" ? rel : dec); else throttle(false);
             int rr = ndl_play_video(p->data, p->size, (long long)rel * 1000);
-            if (rr == 0) { fed++; if (!shown && fed > 30) { shown = true; hooks.status(2, adec ? "Playing (NDL, with sound)" : "Playing (NDL hardware decode)", ""); } }
+            if (rr == 0) { fed++; if (!shown && fed > 30) { shown = true; hooks.status(2, mode.label, ""); } }
             else if (++errs < 5) hooks.log("NDL video play " + std::to_string(rr) + " " + ndl_error());
         };
         auto playAudio = [&](AVPacket *p) {
@@ -395,7 +422,7 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
                 int64_t fts = frame->pts != AV_NOPTS_VALUE
                     ? av_rescale_q(frame->pts, as->time_base, AVRational{1, 1000000}) - base : rel;
                 // audiodelay= moves the sound against the picture (negative = earlier).
-                pace(fts + (int64_t)cfg.audioDelayMs * 1000);
+                if (mode.paced) pace(fts + (int64_t)cfg.audioDelayMs * 1000); else throttle(true);
                 int rr = ndl_play_audio(pcm.data(), (unsigned)n * 4, (long long)fts * 1000);
                 if (rr == 0) afed++;
                 else if (++aerrs < 5) hooks.log("NDL audio play " + std::to_string(rr) + " " + ndl_error());
@@ -408,17 +435,33 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
             if (pkt->stream_index == vi) {
                 if (bsf) { if (av_bsf_send_packet(bsf, pkt) == 0) while (av_bsf_receive_packet(bsf, pkt) == 0) { playVideo(pkt); av_packet_unref(pkt); } }
                 else playVideo(pkt);
-            } else if (adec && as && pkt->stream_index == as->index) {
+            } else if (mode.audio && adec && as && pkt->stream_index == as->index && base != AV_NOPTS_VALUE) {
                 playAudio(pkt);
             }
             av_packet_unref(pkt);
             auto now = std::chrono::steady_clock::now();
+            if (cycle && now - modeStart > std::chrono::seconds(25)) {
+                // Next test: restart the TV player and begin at a keyframe.
+                hooks.log(std::string("end of ") + mode.label + ": fed " + std::to_string(fed) + " frames");
+                modeIx = (modeIx + 1) % 4;
+                mode = modes[modeIx];
+                ndl_close();
+                int rr = ndl_open(cfg.appId.c_str(), vs->codecpar->width, vs->codecpar->height,
+                                  vs->codecpar->codec_id == AV_CODEC_ID_HEVC, nullptr);
+                hooks.log(std::string("mode ") + mode.label + ", reopen " + std::to_string(rr));
+                if (rr != 0) { hooks.status(3, "Could not restart the TV player", ndl_error()); break; }
+                base = AV_NOPTS_VALUE; waitKey = true; shown = false; logged = 12;
+                if (adec) avcodec_flush_buffers(adec);
+                hooks.status(1, mode.label, "starting");
+                modeStart = now;
+            }
             if (now - lastReport > std::chrono::seconds(10)) {
                 lastReport = now;
                 hooks.log("NDL fed " + std::to_string(fed) + " frames (errors " + std::to_string(errs) + "), audio "
                           + std::to_string(afed) + " blocks (errors " + std::to_string(aerrs) + "), stalls "
                           + std::to_string(late) + ", jumps " + std::to_string(jumps) + ", audio queued "
-                          + std::to_string(ndl_audio_queued_ms()) + " ms");
+                          + std::to_string(ndl_audio_queued_ms()) + " ms, video queue " + std::to_string(ndl_video_queue())
+                          + " [" + mode.id + "]");
             }
         }
         av_frame_free(&frame);
