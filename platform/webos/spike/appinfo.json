@@ -1,0 +1,12 @@
+{
+  "id": "com.imdoughboy.relay.spike",
+  "version": "0.0.1",
+  "vendor": "im-doughboy",
+  "type": "native",
+  "main": "relay-spike",
+  "title": "Relay Spike",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "nativeLifeCycleInterfaceVersion": 2,
+  "requiredPermissions": ["media.operation"]
+}
