@@ -13,7 +13,8 @@ Build (Linux, needs the openlgtv/buildroot-nc4 webOS SDK, unpacked and
 relocated with its `relocate-sdk.sh`):
 
     platform/webos/build-ffmpeg.sh <sdk-dir> <ffmpeg-source> <ffmpeg-prefix>
-    platform/webos/build-spike.sh <sdk-dir> <out-dir> <ffmpeg-prefix>
+    platform/webos/build-qt.sh <sdk-dir> <qt-work-dir>
+    platform/webos/build-spike.sh <sdk-dir> <out-dir> <ffmpeg-prefix> <qt-work-dir>/qt-target <qt-work-dir>/qt-host
 
 Install the IPK with webOS Dev Manager, then over SSH:
 
@@ -30,3 +31,12 @@ mediaTransportType), `type=media`, `window=0` (no exported video window).
 By default the spike uses feed mode: FFmpeg reads and splits the stream and the
 TV's Starfish player decodes it in hardware (the path Relay will use).
 `mode=ums` tries the TV's own URL player instead; `audio=0` plays video only.
+
+`mode=luna` plays through the TV's own player. Add `relay=1` to send the stream
+through Relay's stream relay (`relay-helper`), `hls=1` to ask for HLS, and
+`switches=8 switchhold=5000` to reload it repeatedly as a channel-switch test.
+
+## Screens (planned)
+
+SDL keeps the window, input and video layer. Qt Quick draws into SDL's GL
+context through `QQuickRenderControl`; there is no Wayland platform plugin.

@@ -268,7 +268,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.14, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.15, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     auto conf = readConf();
@@ -365,6 +365,9 @@ int main(int argc, char **argv)
                 if (mode == "luna") {
                     fc.transport = conf["transport"];
                     fc.hls = conf["hls"] == "1";
+                    fc.relay = conf["relay"] == "1";
+                    fc.switches = atoi(conf["switches"].c_str());
+                    if (conf.count("switchhold")) fc.switchHoldMs = atoi(conf["switchhold"].c_str());
                     runLuna(fc, hooks, quitting);
                     return;
                 }

@@ -1,0 +1,15 @@
+--- a/src/corelib/io/qstorageinfo_linux.cpp
++++ b/src/corelib/io/qstorageinfo_linux.cpp
+@@ -414,7 +414,12 @@
+         bytesFree = statfs_buf.f_bfree * statfs_buf.f_frsize;
+         bytesAvailable = statfs_buf.f_bavail * statfs_buf.f_frsize;
+         blockSize = int(statfs_buf.f_bsize);
++#ifdef _STATFS_F_FLAGS
+         readOnly = (statfs_buf.f_flags & ST_RDONLY) != 0;
++#else
++        // Old glibc headers (the webOS SDK) call this field f_spare[0].
++        readOnly = (statfs_buf.f_spare[0] & ST_RDONLY) != 0;
++#endif
+     }
+ }
+ 

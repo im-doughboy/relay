@@ -1,0 +1,14 @@
+--- a/src/corelib/plugin/qelfparser_p.cpp
++++ b/src/corelib/plugin/qelfparser_p.cpp
+@@ -21,6 +21,11 @@
+ #  error "Need ELF header to parse plugins."
+ #endif
+ 
++// Old glibc headers (the webOS SDK) predate this machine number.
++#ifndef EM_AARCH64
++#  define EM_AARCH64 183
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ using namespace Qt::StringLiterals;

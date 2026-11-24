@@ -1,11 +1,15 @@
 #!/bin/bash
 # Builds the webOS hardware video spike and packs it as an IPK.
-# Usage: platform/webos/build-spike.sh <webos-sdk-dir> <out-dir> <ffmpeg-prefix>
+# Usage: platform/webos/build-spike.sh <webos-sdk-dir> <out-dir> <ffmpeg-prefix> [qt-prefix qt-host-prefix]
+# [qt-prefix] is Qt built for the TV and [qt-host-prefix] the matching Qt tools
+# for this computer; with them, the package includes relay-helper.
 # <ffmpeg-prefix> is a static FFmpeg built for the TV (see build-ffmpeg.sh).
 # The SDK is openlgtv/buildroot-nc4's arm-webos-linux-gnueabi_sdk-buildroot
 # (run its relocate-sdk.sh once after unpacking).
 set -euo pipefail
 SDK=$(cd "$1" && pwd); OUT=$(mkdir -p "$2" && cd "$2" && pwd); FF=$(cd "$3" && pwd)
+QT=${4:+$(cd "$4" && pwd)}
+QT_HOST=${5:+$(cd "$5" && pwd)}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ID=com.imdoughboy.relay.spike
 VER=$(python3 -c "import json,sys;print(json.load(open('$HERE/spike/appinfo.json'))['version'])")
@@ -26,6 +30,14 @@ mkdir -p "$APP/lib" "$STAGE/data/usr/palm/packages/$ID" "$STAGE/control"
 # The TV's own libstdc++ can be older than this compiler's, so ship ours.
 cp -L "$SR/usr/lib/libstdc++.so.6" "$APP/lib/"
 "$SDK/bin/arm-webos-linux-gnueabi-strip" "$APP/lib/libstdc++.so.6"
+
+if [ -n "$QT" ]; then
+  "$QT/bin/qt-cmake" -S "$HERE/relay-helper" -B "$STAGE/helper" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DQT_HOST_PATH="$QT_HOST" -DQT_HOST_PATH_CMAKE_DIR="$QT_HOST/lib/cmake"
+  cmake --build "$STAGE/helper" --parallel
+  cp "$STAGE/helper/relay-helper" "$APP/"
+  "$SDK/bin/arm-webos-linux-gnueabi-strip" "$APP/relay-helper"
+fi
 
 cp "$HERE/spike/appinfo.json" "$APP/"
 python3 - "$HERE/../../packaging/icons/relay.png" "$APP" <<'PY'

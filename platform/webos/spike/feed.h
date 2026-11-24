@@ -16,6 +16,9 @@ struct FeedConfig {
     int audioDelayMs = 0;
     std::string transport; // luna mode: mediaTransportType, empty = let the TV choose
     bool hls = false;      // luna mode: ask the provider for HLS (.m3u8) instead of TS
+    bool relay = false;    // luna mode: play through Relay's stream relay on the TV
+    int switches = 0;      // luna mode: reload this many extra times, as a channel-switch test
+    int switchHoldMs = 8000;
     std::string test; // A-D: stick to one NDL feeding test; empty = cycle
 };
 
