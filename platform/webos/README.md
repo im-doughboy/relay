@@ -18,6 +18,10 @@ Install the IPK with webOS Dev Manager, then over SSH:
 
     echo "url=http://your.provider/live/user/pass/1234.ts" > /tmp/relay-spike.conf
 
+The url can also be a whole playlist (an M3U or get.php address); the spike
+then plays its first live channel, or the first whose name contains
+`channel=...`.
+
 Open Relay Spike from the launcher. OK pauses and plays, Back quits. The log is
 in `/tmp/relay-spike.log`. Other settings: `transport=HLS` (or another
 mediaTransportType), `type=media`, `window=0` (no exported video window).

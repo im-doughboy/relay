@@ -9,6 +9,8 @@
 //   type=media                uMediaServer media type (default "media")
 //   transport=                optional mediaTransportType, e.g. HLS or URI
 //   window=1                  1 = hand the video an exported window (webOS 5+)
+//   channel=ESPN              with a playlist url: play the first live channel whose name has this
+//   bus=private               media server bus (default public); conn= sets a connection id
 // Log: /tmp/relay-spike.log (and the app dir if /tmp is not writable).
 
 #include <SDL2/SDL.h>
@@ -26,6 +28,9 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <csignal>
+#include <execinfo.h>
+#include <vector>
 
 static const char *kAppId = "com.imdoughboy.relay.spike";
 static std::string g_appDir = ".";
@@ -83,10 +88,72 @@ static std::string jsonEscape(const std::string &s)
     return o;
 }
 
+
+static int g_logFd = -1;
+static void onCrash(int sig)
+{
+    if (g_logFd >= 0) {
+        char m[64]; int n = snprintf(m, sizeof m, "CRASH signal %d\n", sig);
+        if (write(g_logFd, m, n) < 0) {}
+        void *frames[48]; int c = backtrace(frames, 48);
+        backtrace_symbols_fd(frames, c, g_logFd);
+    }
+    signal(sig, SIG_DFL); raise(sig);
+}
+
+// Fetches a URL with the TV's curl or wget (keeps the spike free of extra libraries).
+static std::string fetch(const std::string &url)
+{
+    std::string q = "'"; for (char c : url) { if (c == '\'') q += "'\\''"; else q += c; } q += "'";
+    for (std::string cmd : { "curl -sL --max-time 60 -A 'Relay' " + q, "wget -q -T 60 -O - " + q }) {
+        FILE *p = popen((cmd + " 2>/dev/null").c_str(), "r");
+        if (!p) continue;
+        std::string out; char buf[65536]; size_t n;
+        while ((n = fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
+        pclose(p);
+        if (!out.empty()) return out;
+    }
+    return {};
+}
+
+static bool looksLikePlaylist(const std::string &u)
+{
+    return u.find("get.php") != std::string::npos || u.find("type=m3u") != std::string::npos
+        || (u.size() > 4 && (u.compare(u.size() - 4, 4, ".m3u") == 0));
+}
+
+static std::string lower(std::string s) { for (auto &c : s) c = (char)tolower((unsigned char)c); return s; }
+
+// Picks a live channel from an M3U: the first whose name contains `want`
+// (any live channel when `want` is empty). Films and series are skipped.
+static std::string pickChannel(const std::string &m3u, const std::string &want, std::string &name)
+{
+    size_t pos = 0; std::string lastName; int seen = 0;
+    while (pos < m3u.size()) {
+        size_t e = m3u.find('\n', pos); if (e == std::string::npos) e = m3u.size();
+        std::string line = m3u.substr(pos, e - pos); pos = e + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.rfind("#EXTINF", 0) == 0) {
+            size_t c = line.rfind(',');
+            lastName = c == std::string::npos ? "" : line.substr(c + 1);
+        } else if (!line.empty() && line[0] != '#') {
+            seen++;
+            if (line.find("/movie/") != std::string::npos || line.find("/series/") != std::string::npos) continue;
+            if (!want.empty() && lower(lastName).find(lower(want)) == std::string::npos) continue;
+            name = lastName;
+            spikeLog("playlist has %d entries so far, chose \"%s\"", seen, lastName.c_str());
+            return line;
+        }
+    }
+    spikeLog("no matching live channel among %d entries", seen);
+    return {};
+}
+
 using uMediaServer::uMediaClient;
 
 class Player : public uMediaClient {
 public:
+    Player(UMSConnectorBusType bus, const std::string &conn) : uMediaClient(false, bus, conn) {}
     bool onLoadCompleted() override { setStatus(1, "Loaded, starting"); play(); return true; }
     bool onPlaying() override { setStatus(2, "Playing"); return true; }
     bool onPaused() override { setStatus(1, "Paused"); return true; }
@@ -171,7 +238,10 @@ int main(int argc, char **argv)
     if (base) { g_appDir = base; SDL_free(base); }
     g_logFile = fopen("/tmp/relay-spike.log", "w");
     if (!g_logFile) g_logFile = fopen((g_appDir + "/relay-spike.log").c_str(), "w");
-    spikeLog("Relay webOS spike, app dir %s", g_appDir.c_str());
+    if (g_logFile) g_logFd = fileno(g_logFile);
+    for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
+    signal(SIGPIPE, SIG_IGN);
+    spikeLog("Relay webOS spike 0.0.2, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -211,20 +281,45 @@ int main(int argc, char **argv)
         }
     }
 
-    Player *player = nullptr;
+    // Everything that talks to the network or the media server runs on its
+    // own thread, so the screen keeps showing what is happening.
+    std::atomic<Player *> player{nullptr};
+    std::atomic<bool> quitting{false};
+    std::atomic<Uint32> loadStarted{0};
     std::thread umsThread;
     if (url.empty()) {
         setStatus(3, "No stream set", "Put url=... in /tmp/relay-spike.conf and reopen");
     } else {
-        player = new Player();
-        std::string opt = std::string("{\"option\":{\"appId\":\"") + kAppId + "\"";
-        if (!windowId.empty()) opt += ",\"windowId\":\"" + jsonEscape(windowId) + "\"";
-        if (conf.count("transport")) opt += ",\"mediaTransportType\":\"" + jsonEscape(conf["transport"]) + "\"";
-        opt += "}}";
-        spikeLog("load %s type=%s payload=%s", url.c_str(), type.c_str(), opt.c_str());
-        setStatus(1, "Loading", url);
-        if (!player->loadAsync(url, type, opt)) setStatus(3, "Load refused");
-        umsThread = std::thread([player] { player->run(); });
+        umsThread = std::thread([&, url, type] {
+            std::string stream = url, name;
+            if (looksLikePlaylist(url)) {
+                setStatus(1, "Downloading playlist");
+                std::string m3u = fetch(url);
+                spikeLog("playlist %zu bytes", m3u.size());
+                if (m3u.empty()) { setStatus(3, "Could not download the playlist", "curl/wget failed or the server refused"); return; }
+                stream = pickChannel(m3u, conf["channel"], name);
+                if (stream.empty()) { setStatus(3, "No live channel found in the playlist"); return; }
+            }
+            if (quitting) return;
+            setStatus(1, "Connecting to the TV media server", name);
+            spikeLog("creating media client (bus=%s)", conf["bus"].c_str());
+            UMSConnectorBusType bus = conf["bus"] == "private" ? UMS_CONNECTOR_PRIVATE_BUS : UMS_CONNECTOR_PUBLIC_BUS;
+            Player *p = new Player(bus, conf["conn"]);
+            spikeLog("media client ready");
+            player = p;
+            std::string opt = std::string("{\"option\":{\"appId\":\"") + kAppId + "\"";
+            if (!windowId.empty()) opt += ",\"windowId\":\"" + jsonEscape(windowId) + "\"";
+            if (conf.count("transport")) opt += ",\"mediaTransportType\":\"" + jsonEscape(conf["transport"]) + "\"";
+            opt += "}}";
+            spikeLog("load type=%s payload=%s", type.c_str(), opt.c_str());
+            spikeLog("stream %s", stream.c_str());
+            setStatus(1, "Loading", name.empty() ? std::string("stream") : name);
+            loadStarted = SDL_GetTicks();
+            if (!p->loadAsync(stream, type, opt)) { setStatus(3, "The media server refused the stream"); }
+            spikeLog("load sent, running media events");
+            p->run();
+            spikeLog("media events stopped");
+        });
     }
 
     bool running = true;
@@ -237,10 +332,14 @@ int main(int argc, char **argv)
                 spikeLog("key scancode %d sym %d", e.key.keysym.scancode, e.key.keysym.sym);
                 if (e.key.keysym.scancode == SDL_WEBOS_SCANCODE_BACK || e.key.keysym.sym == SDLK_ESCAPE)
                     running = false;
-                if (player && e.key.keysym.sym == SDLK_RETURN) {
-                    if (g_state == 2) player->pause(); else player->play();
+                if (Player *p = player.load(); p && e.key.keysym.sym == SDLK_RETURN) {
+                    if (g_state == 2) p->pause(); else p->play();
                 }
             }
+        }
+        if (g_state == 1 && loadStarted && SDL_GetTicks() - loadStarted > 20000) {
+            setStatus(3, "No answer from the media server after 20 s");
+            loadStarted = 0;
         }
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 0);
         SDL_RenderClear(ren);
@@ -261,8 +360,10 @@ int main(int argc, char **argv)
     }
 
     spikeLog("closing");
-    if (player) { player->unload(); player->stop(); }
-    if (umsThread.joinable()) umsThread.join();
+    quitting = true;
+    if (Player *p = player.load()) { p->unload(); p->stop(); }
+    // Don't hang on a stuck download or media server; the process is ending anyway.
+    if (umsThread.joinable()) umsThread.detach();
     if (!windowId.empty()) SDL_webOSDestroyExportedWindow(windowId.c_str());
     SDL_Quit();
     return 0;
