@@ -245,7 +245,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.3, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.4, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -393,7 +393,13 @@ int main(int argc, char **argv)
     // Give the feed a moment to release the TV's decoder cleanly.
     for (int i = 0; i < 30 && !workerDone; i++) SDL_Delay(100);
     if (umsThread.joinable()) { if (workerDone) umsThread.join(); else umsThread.detach(); }
-    if (!windowId.empty()) SDL_webOSDestroyExportedWindow(windowId.c_str());
+    // Destroying the exported video window by hand crashed in libwayland on
+    // webOS 10; it goes away with the window, so just close the window.
+    spikeLog("closing window");
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    spikeLog("closing SDL");
     SDL_Quit();
+    spikeLog("closed");
     return 0;
 }

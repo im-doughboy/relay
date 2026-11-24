@@ -9,8 +9,8 @@ mkdir -p doc/examples && touch -a doc/Makefile doc/examples/Makefile
 ./configure --prefix="$PREFIX" --enable-cross-compile --cross-prefix="$SDK/bin/arm-webos-linux-gnueabi-" \
   --arch=arm --target-os=linux --sysroot="$SDK/arm-webos-linux-gnueabi/sysroot" \
   --enable-static --disable-shared --enable-pic --disable-programs --disable-doc \
-  --disable-everything --disable-autodetect --disable-debug --enable-small --enable-network --enable-zlib \
-  --enable-protocol=http,tcp,file,hls,crypto \
+  --disable-everything --disable-autodetect --disable-debug --enable-small --enable-network --enable-zlib --enable-openssl \
+  --enable-protocol=http,https,tls,tcp,file,hls,crypto \
   --enable-demuxer=mpegts,hls,flv,mov,matroska,aac,ac3,eac3,h264,hevc \
   --enable-parser=h264,hevc,mpegvideo,aac,aac_latm,ac3,mpegaudio \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \

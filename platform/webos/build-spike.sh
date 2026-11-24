@@ -19,7 +19,8 @@ mkdir -p "$APP/lib" "$STAGE/data/usr/palm/packages/$ID" "$STAGE/control"
   -I"$SR/usr/include/glib-2.0" -I"$SR/usr/lib/glib-2.0/include" -I"$SR/usr/include/starfish-media-pipeline" \
   -I"$FF/include" -Wl,-rpath,'$ORIGIN/lib' -Wl,--as-needed \
   -lSDL2 -lSDL2_ttf -lumedia_api -lplayerAPIs \
-  "$FF/lib/libavformat.a" "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" -lz -lm -lpthread
+  "$FF/lib/libavformat.a" "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" \
+  "$SR/usr/lib/libssl.a" "$SR/usr/lib/libcrypto.a" -lz -lm -ldl -lpthread
 "$SDK/bin/arm-webos-linux-gnueabi-strip" "$APP/relay-spike"
 # The TV's own libstdc++ can be older than this compiler's, so ship ours.
 cp -L "$SR/usr/lib/libstdc++.so.6" "$APP/lib/"
