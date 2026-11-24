@@ -6,6 +6,7 @@
 #include "feed.h"
 
 #include <StarfishMediaAPIs.h>
+#include "ndl.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -19,6 +20,8 @@ extern "C" {
 #include <thread>
 
 namespace {
+
+const FeedHooks *g_ndlHooks = nullptr;
 
 struct FeedState {
     FeedHooks hooks;
@@ -99,18 +102,18 @@ const char *audioCodecName(AVCodecID id)
 // tries a few known shapes in turn and logs which one the TV accepts.
 struct Variant {
     const char *name;
+    bool foreground;  // call notifyForeground() before Load
     int sizes;        // 0 none, 1 width/height + whole-number fps
     const char *contents; // transmission contentsType, or nullptr to leave out
     bool window;      // pass the exported window id
     bool buffering;   // pass bufferingCtrInfo
 };
 const Variant kVariants[] = {
-    {"1 sizes, LIVE, window", 1, "LIVE", true, true},
-    {"2 no sizes, LIVE, window", 0, "LIVE", true, true},
-    {"3 sizes, WEBRTC, window", 1, "WEBRTC", true, true},
-    {"4 minimal, window", 0, nullptr, true, false},
-    {"5 sizes, LIVE, no window", 1, "LIVE", false, true},
-    {"6 minimal, no window", 0, nullptr, false, false},
+    {"1 sizes, LIVE", false, 1, "LIVE", false, true},
+    {"2 sizes, LIVE, foreground", true, 1, "LIVE", false, true},
+    {"3 minimal, foreground", true, 0, nullptr, false, false},
+    {"4 sizes, WEBRTC, foreground", true, 1, "WEBRTC", false, true},
+    {"5 sizes, LIVE, window, foreground", true, 1, "LIVE", true, true},
 };
 const int kVariantCount = sizeof kVariants / sizeof kVariants[0];
 
@@ -236,6 +239,7 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     bool withAudio = false;
     auto tryLoad = [&](const Variant &v, bool audio) -> bool {
         sf = new StarfishMediaAPIs(cfg.appId.c_str());
+        if (v.foreground) hooks.log(std::string("notifyForeground ") + (sf->notifyForeground() ? "ok" : "failed"));
         std::string payload = loadPayload(cfg, v, vcodec, audio ? acodec : nullptr, vs->codecpar, vs->avg_frame_rate);
         hooks.log(std::string("try variant ") + v.name + (audio ? " + audio" : "") + ": " + payload);
         st.loadState = 0;
@@ -255,7 +259,9 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     };
     int first = 0, last = kVariantCount - 1;
     if (cfg.variant > 0 && cfg.variant <= kVariantCount) first = last = cfg.variant - 1;
-    for (int i = first; i <= last && !sf && !quit; i++) {
+    bool useSmp = cfg.backend != "ndl";
+    for (int i = first; useSmp && i <= last && !sf && !quit; i++) {
+        if (kVariants[i].window && cfg.windowId.empty()) continue;
         if (!tryLoad(kVariants[i], false)) continue;
         if (acodec) {
             // Video works with this shape; now see whether sound can join it.
@@ -265,6 +271,62 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
             hooks.log("audio refused, playing video only");
             tryLoad(kVariants[i], false);
         }
+    }
+    // NDL DirectMedia: the lower-level path Moonlight uses on webOS 5 and later.
+    bool ndl = false;
+    if (!sf && cfg.backend != "smp" && !quit && vs->codecpar->codec_id != AV_CODEC_ID_MPEG2VIDEO) {
+        hooks.log("trying NDL DirectMedia");
+        g_ndlHooks = &hooks;
+        int rr = ndl_open(cfg.appId.c_str(), vs->codecpar->width, vs->codecpar->height,
+                          vs->codecpar->codec_id == AV_CODEC_ID_HEVC,
+                          [](const char *what, int code, long long num, const char *text) {
+            if (g_ndlHooks) g_ndlHooks->log(std::string("NDL ") + what + " " + std::to_string(code) + " "
+                                            + std::to_string(num) + " " + text);
+        });
+        ndl = rr == 0;
+    }
+    if (ndl) {
+        hooks.status(1, "Buffering (NDL, no sound in this test)", cfg.name);
+        AVPacket *pkt = av_packet_alloc();
+        int64_t base = AV_NOPTS_VALUE;
+        long fed = 0, errs = 0;
+        bool shown = false;
+        auto lastReport = std::chrono::steady_clock::now();
+        auto play = [&](AVPacket *p) {
+            int64_t ts = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
+            if (ts == AV_NOPTS_VALUE) return;
+            int64_t us = av_rescale_q(ts, vs->time_base, AVRational{1, 1000000});
+            if (base == AV_NOPTS_VALUE) base = us;
+            if (us < base) return;
+            // NDL plays as fast as it is fed, so pace by the timestamps.
+            static auto t0 = std::chrono::steady_clock::now();
+            auto due = t0 + std::chrono::microseconds(us - base + 300000);
+            std::this_thread::sleep_until(due);
+            int rr = ndl_play_video(p->data, p->size, (long long)(us - base) * 1000);
+            if (rr == 0) { fed++; if (!shown && fed > 30) { shown = true; hooks.status(2, "Playing (NDL hardware decode)", ""); } }
+            else if (++errs < 5) hooks.log("NDL video play " + std::to_string(rr) + " " + ndl_error());
+        };
+        while (!quit) {
+            int rd = av_read_frame(fmt, pkt);
+            if (rd == AVERROR(EAGAIN)) continue;
+            if (rd < 0) { char e[128]; av_strerror(rd, e, sizeof e); hooks.status(3, "Stream ended", e); break; }
+            if (pkt->stream_index == vi) {
+                if (bsf) { if (av_bsf_send_packet(bsf, pkt) == 0) while (av_bsf_receive_packet(bsf, pkt) == 0) { play(pkt); av_packet_unref(pkt); } }
+                else play(pkt);
+            }
+            av_packet_unref(pkt);
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastReport > std::chrono::seconds(10)) {
+                lastReport = now;
+                hooks.log("NDL fed " + std::to_string(fed) + " frames, errors " + std::to_string(errs));
+            }
+        }
+        av_packet_free(&pkt);
+        ndl_close();
+        if (bsf) av_bsf_free(&bsf);
+        avformat_close_input(&fmt);
+        hooks.log("NDL stopped");
+        return;
     }
     if (!sf) { hooks.status(3, "The TV player refused the stream", ""); if (bsf) av_bsf_free(&bsf); avformat_close_input(&fmt); return; }
     control = sf;

@@ -11,6 +11,7 @@ struct FeedConfig {
     std::string windowId;
     bool audio = true;
     int variant = 0; // 0 = try them all
+    std::string backend = "auto";
 };
 
 struct FeedHooks {
