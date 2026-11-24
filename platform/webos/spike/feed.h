@@ -2,6 +2,8 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct FeedConfig {
     std::string url;
@@ -19,6 +21,7 @@ struct FeedConfig {
     bool relay = false;    // luna mode: play through Relay's stream relay on the TV
     int switches = 0;      // luna mode: reload this many extra times, as a channel-switch test
     int switchHoldMs = 8000;
+    std::vector<std::pair<std::string, std::string>> channels; // switch test: live channels to cycle (url, name)
     std::string test; // A-D: stick to one NDL feeding test; empty = cycle
 };
 

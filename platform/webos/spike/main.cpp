@@ -21,6 +21,7 @@
 //   bus=private               media server bus (default public); conn= sets a connection id
 // Log: /tmp/relay-spike.log (and the app dir if /tmp is not writable).
 
+#include <vector>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_webOS.h>
@@ -159,6 +160,31 @@ static std::string pickChannel(const std::string &m3u, const std::string &want, 
     return {};
 }
 
+// Up to `count` different live channels, for the channel-switch test.
+static std::vector<std::pair<std::string, std::string>> pickChannels(const std::string &m3u, const std::string &want, int count)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    size_t pos = 0; std::string lastName;
+    while (pos < m3u.size() && int(out.size()) < count) {
+        size_t e = m3u.find('\n', pos); if (e == std::string::npos) e = m3u.size();
+        std::string line = m3u.substr(pos, e - pos); pos = e + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.rfind("#EXTINF", 0) == 0) {
+            size_t c = line.rfind(',');
+            lastName = c == std::string::npos ? "" : line.substr(c + 1);
+        } else if (!line.empty() && line[0] != '#') {
+            if (line.find("/movie/") != std::string::npos || line.find("/series/") != std::string::npos) continue;
+            if (!want.empty() && lower(lastName).find(lower(want)) == std::string::npos) continue;
+            bool dup = false;
+            for (const auto &c : out) dup = dup || c.first == line;
+            if (!dup) out.push_back({line, lastName});
+        }
+    }
+    spikeLog("switch test: %d channels", int(out.size()));
+    for (const auto &c : out) spikeLog("  channel \"%s\"", c.second.c_str());
+    return out;
+}
+
 
 // Logs what the provider answers before FFmpeg tries, so a refusal shows its
 // real HTTP code. Only the status lines are logged (the address has the login).
@@ -268,7 +294,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.16, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.17, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     auto conf = readConf();
@@ -337,12 +363,15 @@ int main(int argc, char **argv)
         umsThread = std::thread([&, url, type] {
             struct Done { std::atomic<bool> &d; ~Done() { d = true; } } done{workerDone};
             std::string stream = url, name;
+            std::vector<std::pair<std::string, std::string>> channelList;
             if (looksLikePlaylist(url)) {
                 setStatus(1, "Downloading playlist");
                 std::string m3u = fetch(url);
                 spikeLog("playlist %zu bytes", m3u.size());
                 if (m3u.empty()) { setStatus(3, "Could not download the playlist", "curl/wget failed or the server refused"); return; }
                 stream = pickChannel(m3u, conf["channel"], name);
+                if (atoi(conf["channels"].c_str()) > 1)
+                    channelList = pickChannels(m3u, conf["channel"], atoi(conf["channels"].c_str()));
                 if (stream.empty()) { setStatus(3, "No live channel found in the playlist"); return; }
             }
             if (quitting) return;
@@ -366,6 +395,7 @@ int main(int argc, char **argv)
                     fc.transport = conf["transport"];
                     fc.hls = conf["hls"] == "1";
                     fc.relay = conf["relay"] == "1";
+                    fc.channels = channelList;
                     fc.switches = atoi(conf["switches"].c_str());
                     if (conf.count("switchhold")) fc.switchHoldMs = atoi(conf["switchhold"].c_str());
                     runLuna(fc, hooks, quitting);

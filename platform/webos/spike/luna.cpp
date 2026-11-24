@@ -333,13 +333,16 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     st.ctx = g_lunaContext;
     hooks.log("luna using the app connection");
 
-    std::string source = cfg.url;
-    std::string transport = cfg.transport;
-    if (cfg.hls) {
-        std::string h = toHls(cfg.url);
-        if (!h.empty()) { source = h; if (transport.empty()) transport = "HLS"; }
-        else hooks.log("could not turn this address into an HLS one, using it as is");
-    }
+    std::vector<std::pair<std::string, std::string>> list = cfg.channels;
+    if (list.empty()) list.push_back({cfg.url, cfg.name});
+    auto sourceFor = [&](const std::string &url, std::string &transport) {
+        transport = cfg.transport;
+        if (!cfg.hls) return url;
+        std::string h = toHls(url);
+        if (h.empty()) { hooks.log("could not turn this address into an HLS one, using it as is"); return url; }
+        if (transport.empty()) transport = "HLS";
+        return h;
+    };
 
     RelayHelper relay;
     if (cfg.relay && !relay.start(hooks)) {
@@ -367,6 +370,9 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     const int total = cfg.switches + 1;
     std::string relayPath;
     for (int i = 0; i < total && !quit.load(); i++) {
+        const auto &channel = list[size_t(i) % list.size()];
+        std::string transport;
+        const std::string source = sourceFor(channel.first, transport);
         std::string uri = source;
         if (cfg.relay) {
             uri = relay.add(cfg.hls, cfg.userAgent, source, relayPath);
@@ -379,7 +385,7 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
         if (!transport.empty()) payload += "\"mediaTransportType\":\"" + esc(transport) + "\",";
         payload += "\"option\":{" + option + "}}}";
         hooks.log("luna load " + payload);
-        hooks.status(1, std::string("Loading in the TV player") + (cfg.relay ? " (relay)" : "") + (cfg.hls ? " (HLS)" : ""), cfg.name);
+        hooks.status(1, std::string("Loading in the TV player") + (cfg.relay ? " (relay)" : "") + (cfg.hls ? " (HLS)" : ""), channel.second);
 
         st.phase = 0;
         st.played = false;
@@ -398,7 +404,7 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
             usleep(20000);
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
         const int phase = st.phase;
-        hooks.log("load " + std::to_string(i + 1) + "/" + std::to_string(total) + ": "
+        hooks.log("load " + std::to_string(i + 1) + "/" + std::to_string(total) + " " + channel.second + ": "
                   + (phase == 1 ? "playing after " : phase == 2 ? "FAILED after " : "NO ANSWER after ") + std::to_string(ms) + " ms");
         if (i + 1 >= total) break;
         for (int w = 0; w < cfg.switchHoldMs / 50 && !quit.load(); w++) usleep(50000);

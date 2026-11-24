@@ -35,6 +35,7 @@ TV's Starfish player decodes it in hardware (the path Relay will use).
 `mode=luna` plays through the TV's own player. Add `relay=1` to send the stream
 through Relay's stream relay (`relay-helper`), `hls=1` to ask for HLS, and
 `switches=8 switchhold=5000` to reload it repeatedly as a channel-switch test.
+With a playlist, `channels=4` makes those reloads cycle through four live channels.
 
 ## Screens (planned)
 
