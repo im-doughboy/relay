@@ -8,6 +8,8 @@
 //   url=http://...            the stream to play
 //   type=media                uMediaServer media type (default "media")
 //   transport=                optional mediaTransportType, e.g. HLS or URI
+//   mode=feed                 feed (default): FFmpeg reads, Starfish decodes; ums: the TV's URL player
+//   audio=0                   feed mode: video only
 //   window=1                  1 = hand the video an exported window (webOS 5+)
 //   channel=ESPN              with a playlist url: play the first live channel whose name has this
 //   bus=private               media server bus (default public); conn= sets a connection id
@@ -17,6 +19,8 @@
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_webOS.h>
 #include <uMediaClient.h>
+#include <StarfishMediaAPIs.h>
+#include "feed.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -241,7 +245,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.2, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.3, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -286,11 +290,17 @@ int main(int argc, char **argv)
     std::atomic<Player *> player{nullptr};
     std::atomic<bool> quitting{false};
     std::atomic<Uint32> loadStarted{0};
+    std::atomic<void *> feedControl{nullptr};
+    std::atomic<int> dropped{0};
+    std::string mode = conf.count("mode") ? conf["mode"] : "feed";
+    spikeLog("mode %s", mode.c_str());
+    std::atomic<bool> workerDone{false};
     std::thread umsThread;
     if (url.empty()) {
         setStatus(3, "No stream set", "Put url=... in /tmp/relay-spike.conf and reopen");
     } else {
         umsThread = std::thread([&, url, type] {
+            struct Done { std::atomic<bool> &d; ~Done() { d = true; } } done{workerDone};
             std::string stream = url, name;
             if (looksLikePlaylist(url)) {
                 setStatus(1, "Downloading playlist");
@@ -301,7 +311,20 @@ int main(int argc, char **argv)
                 if (stream.empty()) { setStatus(3, "No live channel found in the playlist"); return; }
             }
             if (quitting) return;
+            if (mode != "ums") {
+                FeedConfig fc;
+                fc.url = stream; fc.name = name; fc.appId = kAppId; fc.windowId = windowId;
+                fc.audio = conf["audio"] != "0";
+                FeedHooks hooks;
+                hooks.log = [](const std::string &m) { spikeLog("%s", m.c_str()); };
+                hooks.status = [](int st, const std::string &a, const std::string &b) { setStatus(st, a, b); };
+                hooks.counter = [&dropped](const char *) { dropped++; };
+                spikeLog("stream %s", stream.c_str());
+                runFeed(fc, hooks, quitting, feedControl);
+                return;
+            }
             setStatus(1, "Connecting to the TV media server", name);
+            loadStarted = SDL_GetTicks();
             spikeLog("creating media client (bus=%s)", conf["bus"].c_str());
             UMSConnectorBusType bus = conf["bus"] == "private" ? UMS_CONNECTOR_PRIVATE_BUS : UMS_CONNECTOR_PUBLIC_BUS;
             Player *p = new Player(bus, conf["conn"]);
@@ -332,13 +355,16 @@ int main(int argc, char **argv)
                 spikeLog("key scancode %d sym %d", e.key.keysym.scancode, e.key.keysym.sym);
                 if (e.key.keysym.scancode == SDL_WEBOS_SCANCODE_BACK || e.key.keysym.sym == SDLK_ESCAPE)
                     running = false;
+                if (auto *sf = static_cast<StarfishMediaAPIs *>(feedControl.load()); sf && e.key.keysym.sym == SDLK_RETURN) {
+                    if (g_state == 2) { sf->Pause(); setStatus(1, "Paused"); } else { sf->Play(); setStatus(2, "Playing"); }
+                }
                 if (Player *p = player.load(); p && e.key.keysym.sym == SDLK_RETURN) {
                     if (g_state == 2) p->pause(); else p->play();
                 }
             }
         }
         if (g_state == 1 && loadStarted && SDL_GetTicks() - loadStarted > 20000) {
-            setStatus(3, "No answer from the media server after 20 s");
+            setStatus(3, "No answer from the media server after 20 s", "try mode=feed (the default)");
             loadStarted = 0;
         }
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 0);
@@ -354,6 +380,7 @@ int main(int argc, char **argv)
         if (g_state == 2 && SDL_GetTicks() - start > 8000) bar = {60, 1000, 600, 50};
         SDL_SetRenderDrawColor(ren, c.r, c.g, c.b, c.a);
         SDL_RenderFillRect(ren, &bar);
+        if (dropped > 0) st += "  (dropped " + std::to_string(dropped.load()) + ")";
         drawText(ren, font, "Relay spike: " + st, bar.x + 20, bar.y + 8);
         if (bar.h > 60) drawText(ren, font, de, bar.x + 20, bar.y + 60);
         SDL_RenderPresent(ren);
@@ -363,7 +390,9 @@ int main(int argc, char **argv)
     quitting = true;
     if (Player *p = player.load()) { p->unload(); p->stop(); }
     // Don't hang on a stuck download or media server; the process is ending anyway.
-    if (umsThread.joinable()) umsThread.detach();
+    // Give the feed a moment to release the TV's decoder cleanly.
+    for (int i = 0; i < 30 && !workerDone; i++) SDL_Delay(100);
+    if (umsThread.joinable()) { if (workerDone) umsThread.join(); else umsThread.detach(); }
     if (!windowId.empty()) SDL_webOSDestroyExportedWindow(windowId.c_str());
     SDL_Quit();
     return 0;

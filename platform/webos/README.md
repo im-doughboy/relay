@@ -12,7 +12,8 @@ screens are ported.
 Build (Linux, needs the openlgtv/buildroot-nc4 webOS SDK, unpacked and
 relocated with its `relocate-sdk.sh`):
 
-    platform/webos/build-spike.sh <sdk-dir> <out-dir>
+    platform/webos/build-ffmpeg.sh <sdk-dir> <ffmpeg-source> <ffmpeg-prefix>
+    platform/webos/build-spike.sh <sdk-dir> <out-dir> <ffmpeg-prefix>
 
 Install the IPK with webOS Dev Manager, then over SSH:
 
@@ -25,3 +26,7 @@ then plays its first live channel, or the first whose name contains
 Open Relay Spike from the launcher. OK pauses and plays, Back quits. The log is
 in `/tmp/relay-spike.log`. Other settings: `transport=HLS` (or another
 mediaTransportType), `type=media`, `window=0` (no exported video window).
+
+By default the spike uses feed mode: FFmpeg reads and splits the stream and the
+TV's Starfish player decodes it in hardware (the path Relay will use).
+`mode=ums` tries the TV's own URL player instead; `audio=0` plays video only.
