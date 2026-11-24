@@ -79,8 +79,8 @@ bool CastRelay::ensureListening()
     if (m_server->isListening()) return true;
     // A fixed port when free, so a firewall rule keeps working.
     for (quint16 p = kFirstPort; p < kFirstPort + 10; ++p)
-        if (m_server->listen(QHostAddress::AnyIPv4, p)) break;
-    if (!m_server->isListening() && !m_server->listen(QHostAddress::AnyIPv4, 0)) {
+        if (m_server->listen(m_listenAddress, p)) break;
+    if (!m_server->isListening() && !m_server->listen(m_listenAddress, 0)) {
         qWarning().noquote() << "Cast: couldn't start the stream relay:" << m_server->errorString();
         return false;
     }
@@ -89,6 +89,8 @@ bool CastRelay::ensureListening()
 }
 
 quint16 CastRelay::port() const { return m_server->serverPort(); }
+
+void CastRelay::setListenAddress(const QHostAddress &address) { m_listenAddress = address; }
 
 QString CastRelay::add(const Source &source)
 {

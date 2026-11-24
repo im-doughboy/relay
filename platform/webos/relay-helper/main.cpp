@@ -40,6 +40,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "relay-helper: Qt %s, TLS backend %s, TLS support %d\n", qVersion(),
             qPrintable(QSslSocket::activeBackend()), int(QSslSocket::supportsSsl()));
     CastRelay relay;
+    relay.setListenAddress(QHostAddress::LocalHost);   // only the TV's own player connects
     QByteArray pending;
     QSocketNotifier input(STDIN_FILENO, QSocketNotifier::Read);
     QObject::connect(&input, &QSocketNotifier::activated, &app, [&] {

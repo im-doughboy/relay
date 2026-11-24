@@ -52,6 +52,9 @@ public:
     QString urlFor(const QString &path, const QHostAddress &peer) const;
     static QHostAddress localAddressFacing(const QHostAddress &peer);
     quint16 port() const;
+    // Where the server listens; set before the first add(). By default all
+    // IPv4 interfaces, because TVs and Chromecasts connect over the network.
+    void setListenAddress(const QHostAddress &address);
 
     // HLS playlist lines pointing elsewhere -> through the relay. `register_`
     // gets each absolute address and returns the path to use instead.
@@ -90,4 +93,5 @@ private:
     QHash<QString, Entry> m_entries;   // token -> stream
     QList<Waiting> m_waiting;          // playlist requests before there are segments
     QTimer m_waitTimer;
+    QHostAddress m_listenAddress = QHostAddress::AnyIPv4;
 };

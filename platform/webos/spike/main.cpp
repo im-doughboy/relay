@@ -268,7 +268,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.15, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.16, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     auto conf = readConf();
