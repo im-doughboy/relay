@@ -28,6 +28,7 @@ struct FeedHooks {
 // Plays `cfg.url` until `quit` is set. `control` holds the StarfishMediaAPIs
 // object while playing, so the UI thread can pause and resume it.
 // Plays `cfg.url` with the TV's own player (com.webos.media) until `quit`.
+std::string lunaEarlyInit(const char *appId);
 void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &quit);
 
 void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &quit,

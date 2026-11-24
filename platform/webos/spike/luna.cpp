@@ -6,11 +6,45 @@
 
 #include "feed.h"
 
+#include <dlfcn.h>
 #include <glib.h>
 #include <luna-service2/lunaservice.h>
 
 #include <string>
 #include <unistd.h>
+
+static LSHandle *g_lunaHandle = nullptr;
+static GMainContext *g_lunaContext = nullptr;
+
+// Must run before SDL_Init. The app's bus name can only be held once, so the
+// spike registers it here and gives the same connection to SDL.
+std::string lunaEarlyInit(const char *appId)
+{
+    LSError err; LSErrorInit(&err);
+    LSHandle *h = nullptr;
+    if (!LSRegister(appId, &h, &err)) {
+        std::string m = err.message ? err.message : "LSRegister failed";
+        LSErrorFree(&err);
+        return m;
+    }
+    GMainContext *ctx = g_main_context_new();
+    if (!LSGmainContextAttach(h, ctx, &err)) {
+        std::string m = err.message ? err.message : "LSGmainContextAttach failed";
+        LSErrorFree(&err);
+        return m;
+    }
+    g_lunaHandle = h;
+    g_lunaContext = ctx;
+    g_thread_new("luna", [](gpointer l) -> gpointer {
+        g_main_loop_run(static_cast<GMainLoop *>(l));
+        return nullptr;
+    }, g_main_loop_new(ctx, FALSE));
+    // Looked up at run time: the SDK's SDL does not declare this TV function.
+    auto setHandle = reinterpret_cast<int (*)(LSHandle *)>(dlsym(RTLD_DEFAULT, "SDL_webOSSetLSHandle"));
+    if (!setHandle) return "SDL_webOSSetLSHandle not found";
+    setHandle(h);
+    return {};
+}
 
 namespace {
 
@@ -32,6 +66,7 @@ struct LunaState {
     std::string mediaId;
     int events = 0;
     bool played = false;
+    std::atomic<bool> closed{false};
 };
 
 std::string esc(const std::string &s)
@@ -68,6 +103,7 @@ void call(LunaState *st, const char *method, const std::string &payload, LSFilte
 bool onPlayReply(LSHandle *, LSMessage *msg, void *data)
 {
     auto *st = static_cast<LunaState *>(data);
+    if (st->closed) return true;
     st->hooks->log(std::string("play reply ") + LSMessageGetPayload(msg));
     return true;
 }
@@ -75,6 +111,7 @@ bool onPlayReply(LSHandle *, LSMessage *msg, void *data)
 bool onEvent(LSHandle *, LSMessage *msg, void *data)
 {
     auto *st = static_cast<LunaState *>(data);
+    if (st->closed) return true;
     std::string p = LSMessageGetPayload(msg);
     bool noisy = p.find("currentTime") != std::string::npos || p.find("bufferRange") != std::string::npos;
     if (!noisy && st->events++ < 60) st->hooks->log("event " + p.substr(0, 400));
@@ -95,6 +132,7 @@ bool onEvent(LSHandle *, LSMessage *msg, void *data)
 bool onLoadReply(LSHandle *, LSMessage *msg, void *data)
 {
     auto *st = static_cast<LunaState *>(data);
+    if (st->closed) return true;
     std::string p = LSMessageGetPayload(msg);
     st->hooks->log("load reply " + p);
     st->mediaId = jsonString(p, "mediaId");
@@ -107,6 +145,7 @@ bool onLoadReply(LSHandle *, LSMessage *msg, void *data)
     // late; start playing anyway after a moment.
     addTimeout(st->ctx, 3000, [](gpointer d) -> gboolean {
         auto *s = static_cast<LunaState *>(d);
+        if (s->closed) return G_SOURCE_REMOVE;
         if (!s->played && !s->mediaId.empty()) {
             s->played = true;
             s->hooks->log("no loadCompleted yet, sending play");
@@ -137,42 +176,12 @@ std::string toHls(const std::string &url)
 
 void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &quit)
 {
-    LunaState st;
+    static LunaState st;
     st.cfg = &cfg; st.hooks = &hooks; st.quit = &quit;
-    GMainContext *ctx = g_main_context_new();
-    g_main_context_push_thread_default(ctx);
-    st.loop = g_main_loop_new(ctx, FALSE);
-    st.ctx = ctx;
-
-    std::string names[] = { cfg.appId, "" };
-    for (const auto &n : names) {
-        LSError err; LSErrorInit(&err);
-        if (LSRegister(n.empty() ? nullptr : n.c_str(), &st.ls, &err)) {
-            hooks.log("luna registered as " + (n.empty() ? std::string("(anonymous)") : n));
-            break;
-        }
-        hooks.log("luna register " + (n.empty() ? std::string("(anonymous)") : n) + " failed: " + (err.message ? err.message : "?"));
-        LSErrorFree(&err);
-        st.ls = nullptr;
-    }
-    if (!st.ls) { hooks.status(3, "Could not reach the TV's services", ""); return; }
-    LSError err; LSErrorInit(&err);
-    if (!LSGmainContextAttach(st.ls, ctx, &err)) { hooks.log("luna attach failed"); LSErrorFree(&err); }
-
-    // With SDL's registration turned off, tell the app manager we are alive
-    // (a native app that never registers gets closed after a while).
-    for (const char *am : { "luna://com.webos.service.applicationmanager/registerApp",
-                            "luna://com.webos.applicationManager/registerApp" }) {
-        LSError e; LSErrorInit(&e);
-        bool ok = LSCall(st.ls, am, "{\"subscribe\":true}", [](LSHandle *, LSMessage *msg, void *d) -> bool {
-            auto *s = static_cast<LunaState *>(d);
-            s->hooks->log(std::string("app manager: ") + LSMessageGetPayload(msg));
-            return true;
-        }, &st, nullptr, &e);
-        if (!ok) LSErrorFree(&e);
-        hooks.log(std::string("registerApp via ") + am + (ok ? " sent" : " failed"));
-        if (ok) break;
-    }
+    if (!g_lunaHandle) { hooks.status(3, "Could not reach the TV's services", ""); return; }
+    st.ls = g_lunaHandle;
+    st.ctx = g_lunaContext;
+    hooks.log("luna using the app connection");
 
     std::string uri = cfg.url;
     std::string transport = cfg.transport;
@@ -191,12 +200,7 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     hooks.status(1, std::string("Loading in the TV player") + (cfg.hls ? " (HLS)" : ""), cfg.name);
     call(&st, "load", payload, onLoadReply);
 
-    addTimeout(ctx, 200, [](gpointer d) -> gboolean {
-        auto *s = static_cast<LunaState *>(d);
-        if (s->quit->load()) { g_main_loop_quit(s->loop); return G_SOURCE_REMOVE; }
-        return G_SOURCE_CONTINUE;
-    }, &st);
-    g_main_loop_run(st.loop);
+    while (!quit.load()) usleep(100000);
 
     if (!st.mediaId.empty()) {
         LSError e2; LSErrorInit(&e2);
@@ -204,7 +208,8 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
                        nullptr, nullptr, nullptr, &e2);
         LSErrorFree(&e2);
         // Let the unload go out before the process ends.
-        for (int i = 0; i < 10; i++) g_main_context_iteration(ctx, FALSE), usleep(20000);
+        usleep(200000);
     }
+    st.closed = true;
     hooks.log("luna stopped");
 }
