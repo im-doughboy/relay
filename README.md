@@ -789,6 +789,9 @@ QR codes for the phone remote are made with Project Nayuki's
 `src/third_party/qrcodegen`). Game controllers are read with [SDL2](https://www.libsdl.org)
 (zlib license).
 
+The interface font is [Inter](https://rsms.me/inter/) by Rasmus Andersson (SIL Open Font
+License 1.1, in `packaging/fonts/Inter`).
+
 Movie and series details and images come from [TMDB](https://www.themoviedb.org). This product
 uses the TMDB API but is not endorsed or certified by TMDB. Trakt is a trademark of Trakt, Inc.;
 Relay isn't affiliated with Trakt, Chromecast (Google) or any IPTV provider.

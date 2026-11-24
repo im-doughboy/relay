@@ -80,6 +80,7 @@ add_library(relay_core STATIC
     src/app/Parental.h             src/app/Parental.cpp
     src/app/OtherPlaylists.h       src/app/OtherPlaylists.cpp
     src/app/Backup.h               src/app/Backup.cpp
+    src/app/Fonts.h                src/app/Fonts.cpp
     src/epg/Programme.h
     src/epg/XmltvParser.h          src/epg/XmltvParser.cpp
     src/epg/EpgMatcher.h           src/epg/EpgMatcher.cpp
@@ -101,6 +102,10 @@ target_link_libraries(relay_core PUBLIC
 # The phone remote's page.
 set_source_files_properties(src/web/remote.html PROPERTIES QT_RESOURCE_ALIAS remote.html)
 qt_add_resources(relay_core "relay_web" PREFIX "/web" FILES src/web/remote.html)
+# Relay's interface font on every platform (packaging/fonts/Inter, SIL OFL 1.1).
+qt_add_resources(relay_core "relay_fonts" PREFIX "/fonts" BASE packaging/fonts/Inter FILES
+    packaging/fonts/Inter/Inter-Regular.ttf packaging/fonts/Inter/Inter-Medium.ttf
+    packaging/fonts/Inter/Inter-SemiBold.ttf packaging/fonts/Inter/Inter-Bold.ttf)
 
 # Game controllers (Xbox, PlayStation, Switch…) through SDL2; without it Relay
 # builds, but doesn't see controllers.

@@ -36,8 +36,12 @@ TV's Starfish player decodes it in hardware (the path Relay will use).
 through Relay's stream relay (`relay-helper`), `hls=1` to ask for HLS, and
 `switches=8 switchhold=5000` to reload it repeatedly as a channel-switch test.
 With a playlist, `channels=4` makes those reloads cycle through four live channels.
+`ui=1` draws the screen with Qt Quick (`spike/Main.qml`) over the video instead
+of the SDL status bar.
 
-## Screens (planned)
+## Screens
 
 SDL keeps the window, input and video layer. Qt Quick draws into SDL's GL
 context through `QQuickRenderControl`; there is no Wayland platform plugin.
+`qpa-sdl/` is a small Qt platform plugin that hands Qt SDL's context, and the
+spike's `ui=1` is the first use of it.

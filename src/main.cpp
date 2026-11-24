@@ -1,5 +1,6 @@
 #include "app/AppSettings.h"
 #include "app/Backup.h"
+#include "app/Fonts.h"
 #include "app/Log.h"
 #include "app/Session.h"
 #include "app/Trakt.h"
@@ -125,6 +126,7 @@ int main(int argc, char *argv[])
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
     QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/relay.png")));
+    useBundledFonts();   // Inter on every system; the system's fonts for scripts it lacks
 
     // mpv requires the C numeric locale (Qt may have changed it).
     std::setlocale(LC_NUMERIC, "C");

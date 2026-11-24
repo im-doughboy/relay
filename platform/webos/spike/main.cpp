@@ -28,6 +28,7 @@
 #include <uMediaClient.h>
 #include <StarfishMediaAPIs.h>
 #include "feed.h"
+#include "ui.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -41,6 +42,8 @@
 #include <unistd.h>
 #include <csignal>
 #include <execinfo.h>
+#include <fcntl.h>
+#include <ucontext.h>
 #include <vector>
 
 static const char *kAppId = "com.imdoughboy.relay.spike";
@@ -101,6 +104,26 @@ static std::string jsonEscape(const std::string &s)
 
 
 static int g_logFd = -1;
+// ARM builds have no unwind tables, so backtrace() finds nothing: log where
+// it stopped and the memory map, to look the address up in relay-spike.debug.
+static void onCrashInfo(int sig, siginfo_t *si, void *context)
+{
+    if (g_logFd >= 0) {
+        const auto *uc = static_cast<const ucontext_t *>(context);
+        char m[160];
+        int n = snprintf(m, sizeof m, "CRASH signal %d at pc %08lx lr %08lx address %p\n", sig,
+                         (unsigned long)uc->uc_mcontext.arm_pc, (unsigned long)uc->uc_mcontext.arm_lr, si->si_addr);
+        if (write(g_logFd, m, n) < 0) {}
+        int maps = open("/proc/self/maps", O_RDONLY);
+        char buf[4096];
+        for (ssize_t r; maps >= 0 && (r = read(maps, buf, sizeof buf)) > 0;)
+            if (write(g_logFd, buf, r) < 0) break;
+        if (maps >= 0) close(maps);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 static void onCrash(int sig)
 {
     if (g_logFd >= 0) {
@@ -292,12 +315,20 @@ int main(int argc, char **argv)
     g_logFile = fopen("/tmp/relay-spike.log", "w");
     if (!g_logFile) g_logFile = fopen((g_appDir + "/relay-spike.log").c_str(), "w");
     if (g_logFile) g_logFd = fileno(g_logFile);
-    for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
+    for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) {
+        struct sigaction sa = {};
+        sa.sa_sigaction = onCrashInfo;
+        sa.sa_flags = SA_SIGINFO;
+        sigaction(sig, &sa, nullptr);
+    }
+    (void)onCrash;
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.17, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.18, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     auto conf = readConf();
+    const bool uiMode = conf["ui"] == "1";   // Qt Quick draws the screen (ui.cpp)
+    if (conf["qmljit"] == "0") setenv("QV4_FORCE_INTERPRETER", "1", 1);   // QML without its JIT compiler
     if (conf["mode"] == "luna") {
         std::string lunaError = lunaEarlyInit(kAppId);
         spikeLog("luna early init: %s", lunaError.empty() ? "ok" : lunaError.c_str());
@@ -313,12 +344,21 @@ int main(int argc, char **argv)
 
     // The video plane sits under the UI, so the UI must be cleared to alpha 0.
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+    if (uiMode) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+        SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    }
     SDL_Window *win = SDL_CreateWindow("Relay", 0, 0, 1920, 1080, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_OPENGL);
     if (!win) { spikeLog("window: %s", SDL_GetError()); return 1; }
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren) { spikeLog("renderer: %s", SDL_GetError()); return 1; }
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    SDL_webOSCursorVisibility(SDL_FALSE);
+    SDL_Renderer *ren = nullptr;   // ui=1 draws with its own GL context instead
+    if (!uiMode) {
+        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (!ren) { spikeLog("renderer: %s", SDL_GetError()); return 1; }
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    }
+    SDL_webOSCursorVisibility(uiMode ? SDL_TRUE : SDL_FALSE);   // ui=1 works with the Magic Remote's pointer
     TTF_Font *font = openFont(34);
 
     std::string url = conf["url"];
@@ -426,7 +466,16 @@ int main(int argc, char **argv)
         });
     }
 
-    bool running = true;
+    if (uiMode)
+        runUi(win,
+              [] {
+                  UiStatus s;
+                  std::lock_guard<std::mutex> l(g_mx);
+                  s.state = g_state; s.status = g_status; s.detail = g_detail;
+                  return s;
+              },
+              [](const std::string &m) { spikeLog("%s", m.c_str()); });
+    bool running = !uiMode;   // ui=1 has run its own loop
     Uint32 start = SDL_GetTicks();
     while (running) {
         SDL_Event e;
@@ -477,7 +526,7 @@ int main(int argc, char **argv)
     // Destroying the exported video window by hand crashed in libwayland on
     // webOS 10; it goes away with the window, so just close the window.
     spikeLog("closing window");
-    SDL_DestroyRenderer(ren);
+    if (ren) SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     spikeLog("closing SDL");
     SDL_Quit();
