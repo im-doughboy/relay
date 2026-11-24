@@ -1,0 +1,142 @@
+# Builds the webOS spike on GitHub's machines, the same way as on your own
+# computer (platform/webos/README.md): the openlgtv webOS SDK, a small static
+# FFmpeg, and the Qt version MSYS2 gives the Windows build, so both share one Qt.
+#
+# - Pushes to main and pull requests that touch the webOS port or the stream
+#   relay: build, and keep the IPK with the run (Actions → the run → Artifacts).
+# - Or start it by hand: Actions → webOS build → Run workflow.
+#
+# If MSYS2 moves to a Qt version that has no platform/webos/qt-patches/<version>/
+# folder, the build stops and says so. Check that version builds for the TV with
+# platform/webos/build-qt.sh, then add its folder (its SHA256 and any patches).
+name: webOS build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/webos/**'
+      - 'src/cast/**'
+      - 'packaging/icons/relay.png'
+      - '.github/workflows/webos.yml'
+  pull_request:
+    paths:
+      - 'platform/webos/**'
+      - 'src/cast/**'
+      - 'packaging/icons/relay.png'
+      - '.github/workflows/webos.yml'
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older build pointless.
+concurrency:
+  group: webos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SDK_RELEASE: 2026.08-webos
+  SDK_FILE: arm-webos-linux-gnueabi_sdk-buildroot-x86_64.tar.gz
+  SDK_SHA256: 2230a6351e5cce6fcb9d4fdcb4697335f223995401ef969c81744aaeb14c5344
+  FFMPEG_TAG: n7.1.1
+
+jobs:
+  webos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake ninja-build perl patch curl \
+            xz-utils zstd python3 python3-pil nasm pkg-config git
+
+      # The same package the Windows build installs (qt6-base, UCRT64).
+      - name: Qt version from MSYS2
+        id: qt
+        run: |
+          curl -fsSL https://mirror.msys2.org/mingw/ucrt64/ucrt64.db -o "$RUNNER_TEMP/ucrt64.db"
+          pkg=$(tar -tf "$RUNNER_TEMP/ucrt64.db" | grep -E '^mingw-w64-ucrt-x86_64-qt6-base-[0-9]' | head -1 | cut -d/ -f1)
+          version=$(echo "$pkg" | sed -E 's/^mingw-w64-ucrt-x86_64-qt6-base-([0-9.]+)-.*/\1/')
+          echo "MSYS2 UCRT64 has $pkg"
+          if [ -z "$version" ]; then
+            echo "::error::Could not find qt6-base in MSYS2's UCRT64 package list."
+            exit 1
+          fi
+          if [ ! -f "platform/webos/qt-patches/$version/SHA256" ]; then
+            echo "::error::MSYS2 now has Qt $version, which platform/webos/qt-patches/ doesn't cover yet. Check that it builds for the TV with platform/webos/build-qt.sh, then add platform/webos/qt-patches/$version/."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK download
+        uses: actions/cache@v4
+        with:
+          path: ~/webos-sdk/${{ env.SDK_FILE }}
+          key: webos-sdk-${{ env.SDK_RELEASE }}
+
+      - name: SDK
+        run: |
+          mkdir -p ~/webos-sdk
+          cd ~/webos-sdk
+          if [ ! -f "$SDK_FILE" ]; then
+            curl -fsSL -o "$SDK_FILE.part" "https://github.com/openlgtv/buildroot-nc4/releases/download/$SDK_RELEASE/$SDK_FILE"
+            mv "$SDK_FILE.part" "$SDK_FILE"
+          fi
+          echo "$SDK_SHA256  $SDK_FILE" | sha256sum -c -
+          rm -rf arm-webos-linux-gnueabi_sdk-buildroot
+          tar -xzf "$SDK_FILE"
+          ( cd arm-webos-linux-gnueabi_sdk-buildroot && ./relocate-sdk.sh )
+          echo "SDK=$HOME/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot" >> "$GITHUB_ENV"
+
+      - name: Cache Qt for the TV
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/webos-qt/qt-target
+            ~/webos-qt/qt-host
+            ~/webos-qt/webos-qt-toolchain.cmake
+          key: webos-qt-${{ steps.qt.outputs.version }}-${{ env.SDK_RELEASE }}-${{ hashFiles('platform/webos/build-qt.sh', 'platform/webos/qt-patches/**') }}
+
+      - name: Qt for the TV
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          platform/webos/build-qt.sh "$SDK" ~/webos-qt "${{ steps.qt.outputs.version }}"
+          rm -rf ~/webos-qt/qtbase-src ~/webos-qt/build-host ~/webos-qt/build-target
+
+      - name: Cache FFmpeg for the TV
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/webos-ffmpeg
+          key: webos-ffmpeg-${{ env.FFMPEG_TAG }}-${{ env.SDK_RELEASE }}-${{ hashFiles('platform/webos/build-ffmpeg.sh') }}
+
+      - name: FFmpeg for the TV
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone -q --depth 1 --branch "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git "$RUNNER_TEMP/ffmpeg-src"
+          platform/webos/build-ffmpeg.sh "$SDK" "$RUNNER_TEMP/ffmpeg-src" ~/webos-ffmpeg
+
+      - name: Spike
+        id: spike
+        run: |
+          platform/webos/build-spike.sh "$SDK" dist ~/webos-ffmpeg ~/webos-qt/qt-target ~/webos-qt/qt-host
+          ipk=$(ls dist/*.ipk)
+          ar p "$ipk" data.tar.gz | tar -tz > "$RUNNER_TEMP/ipk-files"
+          grep -q '/relay-helper$' "$RUNNER_TEMP/ipk-files" || { echo "::error::The package has no relay-helper."; exit 1; }
+          version=$(python3 -c "import json;print(json.load(open('platform/webos/spike/appinfo.json'))['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Built $ipk with Qt ${{ steps.qt.outputs.version }}"
+
+      - name: Keep the package with the run
+        uses: actions/upload-artifact@v6
+        with:
+          name: relay-spike-${{ steps.spike.outputs.version }}-webos
+          path: dist/*.ipk
+          if-no-files-found: error
+          retention-days: 30
