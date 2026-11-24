@@ -16,6 +16,7 @@ extern "C" {
 #include <libavutil/opt.h>
 }
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -308,7 +309,7 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
         AVFrame *frame = av_frame_alloc();
         std::vector<uint8_t> pcm;
         int64_t base = AV_NOPTS_VALUE;
-        long fed = 0, errs = 0, afed = 0, aerrs = 0, late = 0;
+        long fed = 0, errs = 0, afed = 0, aerrs = 0, late = 0, jumps = 0;
         bool shown = false;
         auto t0 = std::chrono::steady_clock::now();
         auto lastReport = t0;
@@ -316,6 +317,12 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
         // Waits until a timestamp is due. NDL plays whatever it gets straight
         // away, so feeding has to follow the stream's own clock. After a
         // network stall, the clock moves on instead of bursting to catch up.
+        // Waits until a stream time is due. NDL shows frames as soon as it has
+        // decoded them, so feeding must follow the stream's clock. Video is
+        // paced by decode time (DTS): paced by display time, B-frames arrive in
+        // bursts and the picture stutters. After a stall, or a jump in the
+        // stream's timestamps, the clock is re-set instead of bursting or
+        // freezing.
         auto pace = [&](int64_t rel) {
             auto due = t0 + std::chrono::microseconds(rel + leadUs);
             auto now = std::chrono::steady_clock::now();
@@ -326,20 +333,40 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
                 late++;
                 return;
             }
+            if (due > now + std::chrono::milliseconds(2000)) {
+                auto ahead = std::chrono::duration_cast<std::chrono::milliseconds>(due - now).count();
+                hooks.log("timestamp jump " + std::to_string(ahead) + " ms ahead, re-timing");
+                t0 -= due - now;
+                jumps++;
+                return;
+            }
             std::this_thread::sleep_until(due);
         };
+        auto toRel = [&](int64_t ts, AVStream *s) { return av_rescale_q(ts, s->time_base, AVRational{1, 1000000}) - base; };
         auto relTime = [&](AVPacket *p, AVStream *s, int64_t &rel) -> bool {
             int64_t ts = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
             if (ts == AV_NOPTS_VALUE) return false;
             int64_t us = av_rescale_q(ts, s->time_base, AVRational{1, 1000000});
-            if (base == AV_NOPTS_VALUE) { if (s != vs) return false; base = us; t0 = std::chrono::steady_clock::now(); }
+            if (base == AV_NOPTS_VALUE) {
+                if (s != vs) return false;
+                int64_t d = p->dts != AV_NOPTS_VALUE ? av_rescale_q(p->dts, s->time_base, AVRational{1, 1000000}) : us;
+                base = std::min(us, d);
+                t0 = std::chrono::steady_clock::now();
+            }
             rel = us - base;
             return rel >= 0;
         };
+        int logged = 0;
         auto playVideo = [&](AVPacket *p) {
             int64_t rel;
             if (!relTime(p, vs, rel)) return;
-            pace(rel);
+            int64_t dec = p->dts != AV_NOPTS_VALUE ? toRel(p->dts, vs) : rel;
+            if (logged < 12) {
+                logged++;
+                hooks.log("video packet dts " + std::to_string(dec / 1000) + " ms, pts " + std::to_string(rel / 1000)
+                          + " ms" + ((p->flags & AV_PKT_FLAG_KEY) ? " key" : ""));
+            }
+            pace(cfg.pace == "pts" ? rel : dec);
             int rr = ndl_play_video(p->data, p->size, (long long)rel * 1000);
             if (rr == 0) { fed++; if (!shown && fed > 30) { shown = true; hooks.status(2, adec ? "Playing (NDL, with sound)" : "Playing (NDL hardware decode)", ""); } }
             else if (++errs < 5) hooks.log("NDL video play " + std::to_string(rr) + " " + ndl_error());
@@ -367,7 +394,8 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
                 if (n <= 0) continue;
                 int64_t fts = frame->pts != AV_NOPTS_VALUE
                     ? av_rescale_q(frame->pts, as->time_base, AVRational{1, 1000000}) - base : rel;
-                pace(fts);
+                // audiodelay= moves the sound against the picture (negative = earlier).
+                pace(fts + (int64_t)cfg.audioDelayMs * 1000);
                 int rr = ndl_play_audio(pcm.data(), (unsigned)n * 4, (long long)fts * 1000);
                 if (rr == 0) afed++;
                 else if (++aerrs < 5) hooks.log("NDL audio play " + std::to_string(rr) + " " + ndl_error());
@@ -389,7 +417,8 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
                 lastReport = now;
                 hooks.log("NDL fed " + std::to_string(fed) + " frames (errors " + std::to_string(errs) + "), audio "
                           + std::to_string(afed) + " blocks (errors " + std::to_string(aerrs) + "), stalls "
-                          + std::to_string(late) + ", audio buffer free " + std::to_string(ndl_audio_free()));
+                          + std::to_string(late) + ", jumps " + std::to_string(jumps) + ", audio queued "
+                          + std::to_string(ndl_audio_queued_ms()) + " ms");
             }
         }
         av_frame_free(&frame);

@@ -54,6 +54,13 @@ int ndl_audio_free(void)
     return avail;
 }
 
+int ndl_audio_queued_ms(void)
+{
+    int avail = 0, total = 0;
+    if (NDL_DirectAudioGetAvailableBufferSize(&avail) != 0 || NDL_DirectAudioGetTotalBufferSize(&total) != 0) return -1;
+    return (total - avail) / 192; /* 48 kHz x 2 ch x 2 bytes = 192 bytes per ms */
+}
+
 const char *ndl_error(void) { return NDL_DirectMediaGetError(); }
 
 void ndl_close(void)

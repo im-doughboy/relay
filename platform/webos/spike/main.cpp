@@ -10,6 +10,8 @@
 //   transport=                optional mediaTransportType, e.g. HLS or URI
 //   mode=feed                 feed (default): FFmpeg reads, Starfish decodes; ums: the TV's URL player
 //   ua=VLC/3.0                user agent sent to the provider (default Relay/0.5.2)
+//   audiodelay=-150           NDL: move the sound against the picture, in ms (negative = earlier)
+//   pace=pts                  NDL: pace video by display time instead of decode time
 //   audio=0                   feed mode: video only
 //   backend=ndl               ndl (default), smp (Starfish), or auto (Starfish, then NDL)
 //   window=1                  1 = hand the video an exported window (webOS 5+)
@@ -264,7 +266,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.8, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.9, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -342,6 +344,8 @@ int main(int argc, char **argv)
                 fc.url = stream; fc.name = name; fc.appId = kAppId; fc.windowId = windowId;
                 fc.audio = conf["audio"] != "0";
                 if (conf.count("ua")) fc.userAgent = conf["ua"];
+                if (conf.count("pace")) fc.pace = conf["pace"];
+                if (conf.count("audiodelay")) fc.audioDelayMs = atoi(conf["audiodelay"].c_str());
                 if (conf.count("variant")) fc.variant = atoi(conf["variant"].c_str());
                 fc.backend = conf.count("backend") ? conf["backend"] : "ndl"; // NDL works on webOS 10; "auto" also tries Starfish first
                 probeHttp(stream, fc.userAgent);
