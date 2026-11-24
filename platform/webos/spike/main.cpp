@@ -8,7 +8,8 @@
 //   url=http://...            the stream to play
 //   type=media                uMediaServer media type (default "media")
 //   transport=                optional mediaTransportType, e.g. HLS or URI
-//   mode=feed                 feed (default): FFmpeg reads, Starfish decodes; ums: the TV's URL player
+//   mode=feed                 feed (default): FFmpeg reads, NDL decodes; luna: the TV's own player via
+//                             com.webos.media (hls=1 asks for the .m3u8 version); ums: uMediaClient
 //   ua=VLC/3.0                user agent sent to the provider (default Relay/0.5.2)
 //   audiodelay=-150           NDL: move the sound against the picture, in ms (negative = earlier)
 //   pace=pts                  NDL: pace video by display time instead of decode time
@@ -267,7 +268,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.10, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.11, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -294,7 +295,9 @@ int main(int argc, char **argv)
     std::string type = conf.count("type") ? conf["type"] : "media";
     // 0.0.6 got "601 Resource Allocation Error" for every load while an
     // exported video window existed, so it is now opt-in (window=1).
-    bool useWindow = conf["window"] == "1";
+    std::string mode = conf.count("mode") ? conf["mode"] : "feed";
+    // The TV's own player (mode=luna) needs a video window to draw into.
+    bool useWindow = conf["window"] == "1" || (mode == "luna" && conf["window"] != "0");
     {
         const char *vars[] = { "APPID", "APP_ID", "SDL_WEBOS_APP_ID", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HOME", "LS_SERVICE_NAMES" };
         for (const char *v : vars) spikeLog("env %s=%s", v, getenv(v) ? getenv(v) : "(unset)");
@@ -321,7 +324,6 @@ int main(int argc, char **argv)
     std::atomic<Uint32> loadStarted{0};
     std::atomic<void *> feedControl{nullptr};
     std::atomic<int> dropped{0};
-    std::string mode = conf.count("mode") ? conf["mode"] : "feed";
     spikeLog("mode %s", mode.c_str());
     std::atomic<bool> workerDone{false};
     std::thread umsThread;
@@ -356,6 +358,12 @@ int main(int argc, char **argv)
                 hooks.status = [](int st, const std::string &a, const std::string &b) { setStatus(st, a, b); };
                 hooks.counter = [&dropped](const char *) { dropped++; };
                 spikeLog("stream %s", stream.c_str());
+                if (mode == "luna") {
+                    fc.transport = conf["transport"];
+                    fc.hls = conf["hls"] == "1";
+                    runLuna(fc, hooks, quitting);
+                    return;
+                }
                 runFeed(fc, hooks, quitting, feedControl);
                 return;
             }

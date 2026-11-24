@@ -14,6 +14,8 @@ struct FeedConfig {
     std::string backend = "auto";
     std::string pace = "dts";
     int audioDelayMs = 0;
+    std::string transport; // luna mode: mediaTransportType, empty = let the TV choose
+    bool hls = false;      // luna mode: ask the provider for HLS (.m3u8) instead of TS
     std::string test; // A-D: stick to one NDL feeding test; empty = cycle
 };
 
@@ -25,5 +27,8 @@ struct FeedHooks {
 
 // Plays `cfg.url` until `quit` is set. `control` holds the StarfishMediaAPIs
 // object while playing, so the UI thread can pause and resume it.
+// Plays `cfg.url` with the TV's own player (com.webos.media) until `quit`.
+void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &quit);
+
 void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &quit,
              std::atomic<void *> &control);
