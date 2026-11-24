@@ -144,7 +144,7 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     st.loop = g_main_loop_new(ctx, FALSE);
     st.ctx = ctx;
 
-    std::string names[] = { cfg.appId + "-" + std::to_string(getpid()), cfg.appId, "" };
+    std::string names[] = { cfg.appId, "" };
     for (const auto &n : names) {
         LSError err; LSErrorInit(&err);
         if (LSRegister(n.empty() ? nullptr : n.c_str(), &st.ls, &err)) {
@@ -158,6 +158,21 @@ void runLuna(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     if (!st.ls) { hooks.status(3, "Could not reach the TV's services", ""); return; }
     LSError err; LSErrorInit(&err);
     if (!LSGmainContextAttach(st.ls, ctx, &err)) { hooks.log("luna attach failed"); LSErrorFree(&err); }
+
+    // With SDL's registration turned off, tell the app manager we are alive
+    // (a native app that never registers gets closed after a while).
+    for (const char *am : { "luna://com.webos.service.applicationmanager/registerApp",
+                            "luna://com.webos.applicationManager/registerApp" }) {
+        LSError e; LSErrorInit(&e);
+        bool ok = LSCall(st.ls, am, "{\"subscribe\":true}", [](LSHandle *, LSMessage *msg, void *d) -> bool {
+            auto *s = static_cast<LunaState *>(d);
+            s->hooks->log(std::string("app manager: ") + LSMessageGetPayload(msg));
+            return true;
+        }, &st, nullptr, &e);
+        if (!ok) LSErrorFree(&e);
+        hooks.log(std::string("registerApp via ") + am + (ok ? " sent" : " failed"));
+        if (ok) break;
+    }
 
     std::string uri = cfg.url;
     std::string transport = cfg.transport;

@@ -268,10 +268,15 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.11, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.12, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
-    SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
+    auto conf = readConf();
+    // Luna mode registers the app on the TV's service bus itself, so its
+    // media calls carry the app's own permissions (an anonymous connection
+    // was refused). SDL would otherwise take the app's name first.
+    bool lunaMode = conf["mode"] == "luna";
+    SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, lunaMode ? "false" : "true");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) { spikeLog("SDL_Init: %s", SDL_GetError()); return 1; }
     TTF_Init();
 
@@ -290,7 +295,6 @@ int main(int argc, char **argv)
     SDL_webOSCursorVisibility(SDL_FALSE);
     TTF_Font *font = openFont(34);
 
-    auto conf = readConf();
     std::string url = conf["url"];
     std::string type = conf.count("type") ? conf["type"] : "media";
     // 0.0.6 got "601 Resource Allocation Error" for every load while an
