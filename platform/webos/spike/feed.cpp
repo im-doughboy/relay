@@ -11,6 +11,9 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/bsf.h>
+#include <libavcodec/avcodec.h>
+#include <libswresample/swresample.h>
+#include <libavutil/opt.h>
 }
 
 #include <chrono>
@@ -18,6 +21,7 @@ extern "C" {
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -286,42 +290,112 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
         ndl = rr == 0;
     }
     if (ndl) {
-        hooks.status(1, "Buffering (NDL, no sound in this test)", cfg.name);
+        // Sound: decode the channel's audio here and send 48 kHz stereo PCM.
+        AVCodecContext *adec = nullptr;
+        SwrContext *swr = nullptr;
+        if (as) {
+            const AVCodec *dc = avcodec_find_decoder(as->codecpar->codec_id);
+            adec = dc ? avcodec_alloc_context3(dc) : nullptr;
+            if (adec && avcodec_parameters_to_context(adec, as->codecpar) == 0 && avcodec_open2(adec, dc, nullptr) == 0) {
+                hooks.log(std::string("audio decoder ") + dc->name);
+            } else {
+                hooks.log("no audio decoder, video only");
+                avcodec_free_context(&adec);
+            }
+        }
+        hooks.status(1, adec ? "Buffering (NDL)" : "Buffering (NDL, no sound)", cfg.name);
         AVPacket *pkt = av_packet_alloc();
+        AVFrame *frame = av_frame_alloc();
+        std::vector<uint8_t> pcm;
         int64_t base = AV_NOPTS_VALUE;
-        long fed = 0, errs = 0;
+        long fed = 0, errs = 0, afed = 0, aerrs = 0, late = 0;
         bool shown = false;
-        auto lastReport = std::chrono::steady_clock::now();
-        auto play = [&](AVPacket *p) {
-            int64_t ts = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
-            if (ts == AV_NOPTS_VALUE) return;
-            int64_t us = av_rescale_q(ts, vs->time_base, AVRational{1, 1000000});
-            if (base == AV_NOPTS_VALUE) base = us;
-            if (us < base) return;
-            // NDL plays as fast as it is fed, so pace by the timestamps.
-            static auto t0 = std::chrono::steady_clock::now();
-            auto due = t0 + std::chrono::microseconds(us - base + 300000);
+        auto t0 = std::chrono::steady_clock::now();
+        auto lastReport = t0;
+        const int64_t leadUs = 300000; // feed this far ahead of the picture
+        // Waits until a timestamp is due. NDL plays whatever it gets straight
+        // away, so feeding has to follow the stream's own clock. After a
+        // network stall, the clock moves on instead of bursting to catch up.
+        auto pace = [&](int64_t rel) {
+            auto due = t0 + std::chrono::microseconds(rel + leadUs);
+            auto now = std::chrono::steady_clock::now();
+            if (now > due + std::chrono::milliseconds(500)) {
+                auto behind = std::chrono::duration_cast<std::chrono::milliseconds>(now - due).count();
+                hooks.log("stall " + std::to_string(behind) + " ms, re-timing");
+                t0 += now - due;
+                late++;
+                return;
+            }
             std::this_thread::sleep_until(due);
-            int rr = ndl_play_video(p->data, p->size, (long long)(us - base) * 1000);
-            if (rr == 0) { fed++; if (!shown && fed > 30) { shown = true; hooks.status(2, "Playing (NDL hardware decode)", ""); } }
+        };
+        auto relTime = [&](AVPacket *p, AVStream *s, int64_t &rel) -> bool {
+            int64_t ts = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
+            if (ts == AV_NOPTS_VALUE) return false;
+            int64_t us = av_rescale_q(ts, s->time_base, AVRational{1, 1000000});
+            if (base == AV_NOPTS_VALUE) { if (s != vs) return false; base = us; t0 = std::chrono::steady_clock::now(); }
+            rel = us - base;
+            return rel >= 0;
+        };
+        auto playVideo = [&](AVPacket *p) {
+            int64_t rel;
+            if (!relTime(p, vs, rel)) return;
+            pace(rel);
+            int rr = ndl_play_video(p->data, p->size, (long long)rel * 1000);
+            if (rr == 0) { fed++; if (!shown && fed > 30) { shown = true; hooks.status(2, adec ? "Playing (NDL, with sound)" : "Playing (NDL hardware decode)", ""); } }
             else if (++errs < 5) hooks.log("NDL video play " + std::to_string(rr) + " " + ndl_error());
+        };
+        auto playAudio = [&](AVPacket *p) {
+            int64_t rel;
+            if (!relTime(p, as, rel)) return;
+            if (avcodec_send_packet(adec, p) < 0) return;
+            while (avcodec_receive_frame(adec, frame) == 0) {
+                if (!swr) {
+                    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+                    if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, 48000,
+                                            &frame->ch_layout, (AVSampleFormat)frame->format, frame->sample_rate, 0, nullptr) < 0
+                        || swr_init(swr) < 0) {
+                        hooks.log("audio resampler failed, video only");
+                        swr_free(&swr); avcodec_free_context(&adec); return;
+                    }
+                    hooks.log("audio " + std::to_string(frame->sample_rate) + " Hz " + std::to_string(frame->ch_layout.nb_channels)
+                              + " ch -> 48000 Hz stereo");
+                }
+                int outMax = swr_get_out_samples(swr, frame->nb_samples);
+                pcm.resize((size_t)outMax * 4);
+                uint8_t *out = pcm.data();
+                int n = swr_convert(swr, &out, outMax, (const uint8_t **)frame->extended_data, frame->nb_samples);
+                if (n <= 0) continue;
+                int64_t fts = frame->pts != AV_NOPTS_VALUE
+                    ? av_rescale_q(frame->pts, as->time_base, AVRational{1, 1000000}) - base : rel;
+                pace(fts);
+                int rr = ndl_play_audio(pcm.data(), (unsigned)n * 4, (long long)fts * 1000);
+                if (rr == 0) afed++;
+                else if (++aerrs < 5) hooks.log("NDL audio play " + std::to_string(rr) + " " + ndl_error());
+            }
         };
         while (!quit) {
             int rd = av_read_frame(fmt, pkt);
             if (rd == AVERROR(EAGAIN)) continue;
             if (rd < 0) { char e[128]; av_strerror(rd, e, sizeof e); hooks.status(3, "Stream ended", e); break; }
             if (pkt->stream_index == vi) {
-                if (bsf) { if (av_bsf_send_packet(bsf, pkt) == 0) while (av_bsf_receive_packet(bsf, pkt) == 0) { play(pkt); av_packet_unref(pkt); } }
-                else play(pkt);
+                if (bsf) { if (av_bsf_send_packet(bsf, pkt) == 0) while (av_bsf_receive_packet(bsf, pkt) == 0) { playVideo(pkt); av_packet_unref(pkt); } }
+                else playVideo(pkt);
+            } else if (adec && as && pkt->stream_index == as->index) {
+                playAudio(pkt);
             }
             av_packet_unref(pkt);
             auto now = std::chrono::steady_clock::now();
             if (now - lastReport > std::chrono::seconds(10)) {
                 lastReport = now;
-                hooks.log("NDL fed " + std::to_string(fed) + " frames, errors " + std::to_string(errs));
+                hooks.log("NDL fed " + std::to_string(fed) + " frames (errors " + std::to_string(errs) + "), audio "
+                          + std::to_string(afed) + " blocks (errors " + std::to_string(aerrs) + "), stalls "
+                          + std::to_string(late) + ", audio buffer free " + std::to_string(ndl_audio_free()));
             }
         }
+        av_frame_free(&frame);
         av_packet_free(&pkt);
+        swr_free(&swr);
+        avcodec_free_context(&adec);
         ndl_close();
         if (bsf) av_bsf_free(&bsf);
         avformat_close_input(&fmt);

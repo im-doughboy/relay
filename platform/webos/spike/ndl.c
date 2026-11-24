@@ -24,8 +24,8 @@ int ndl_open(const char *app_id, int width, int height, int hevc, ndl_log_fn log
     info.video.width = width;
     info.video.height = height;
     info.video.type = hevc ? NDL_VIDEO_TYPE_H265 : NDL_VIDEO_TYPE_H264;
-    /* Video only for now: on webOS 5+ NDL takes PCM or Opus audio, so AAC
-     * has to be decoded first (that comes later). */
+    /* On webOS 5+ NDL takes PCM or Opus audio, so Relay decodes the
+     * channel's AAC/AC3 itself and sends 48 kHz stereo PCM. */
     info.audio.pcm.type = NDL_AUDIO_TYPE_PCM;
     info.audio.pcm.format = NDL_DIRECTMEDIA_AUDIO_PCM_FORMAT_S16LE;
     info.audio.pcm.layout = "interleaved";
@@ -40,6 +40,18 @@ int ndl_open(const char *app_id, int width, int height, int hevc, ndl_log_fn log
 int ndl_play_video(void *data, unsigned size, long long pts_ns)
 {
     return NDL_DirectVideoPlay(data, size, pts_ns);
+}
+
+int ndl_play_audio(void *data, unsigned size, long long pts_ns)
+{
+    return NDL_DirectAudioPlay(data, size, pts_ns);
+}
+
+int ndl_audio_free(void)
+{
+    int avail = 0;
+    if (NDL_DirectAudioGetAvailableBufferSize(&avail) != 0) return -1;
+    return avail;
 }
 
 const char *ndl_error(void) { return NDL_DirectMediaGetError(); }

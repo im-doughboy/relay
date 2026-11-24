@@ -14,5 +14,6 @@ mkdir -p doc/examples && touch -a doc/Makefile doc/examples/Makefile
   --enable-demuxer=mpegts,hls,flv,mov,matroska,aac,ac3,eac3,h264,hevc \
   --enable-parser=h264,hevc,mpegvideo,aac,aac_latm,ac3,mpegaudio \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
-  --disable-avdevice --disable-swscale --disable-avfilter --disable-swresample
+  --enable-decoder=aac,aac_latm,ac3,eac3,mp2,mp3 --enable-swresample \
+  --disable-avdevice --disable-swscale --disable-avfilter
 make -j"$(nproc)" && make install

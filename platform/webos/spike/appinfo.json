@@ -1,6 +1,6 @@
 {
   "id": "com.imdoughboy.relay.spike",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "vendor": "im-doughboy",
   "type": "native",
   "main": "relay-spike",

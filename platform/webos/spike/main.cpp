@@ -11,7 +11,7 @@
 //   mode=feed                 feed (default): FFmpeg reads, Starfish decodes; ums: the TV's URL player
 //   ua=VLC/3.0                user agent sent to the provider (default Relay/0.5.2)
 //   audio=0                   feed mode: video only
-//   backend=auto              auto (Starfish, then NDL), smp or ndl
+//   backend=ndl               ndl (default), smp (Starfish), or auto (Starfish, then NDL)
 //   window=1                  1 = hand the video an exported window (webOS 5+)
 //   channel=ESPN              with a playlist url: play the first live channel whose name has this
 //   bus=private               media server bus (default public); conn= sets a connection id
@@ -264,7 +264,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.7, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.8, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -343,7 +343,7 @@ int main(int argc, char **argv)
                 fc.audio = conf["audio"] != "0";
                 if (conf.count("ua")) fc.userAgent = conf["ua"];
                 if (conf.count("variant")) fc.variant = atoi(conf["variant"].c_str());
-                fc.backend = conf.count("backend") ? conf["backend"] : "auto";
+                fc.backend = conf.count("backend") ? conf["backend"] : "ndl"; // NDL works on webOS 10; "auto" also tries Starfish first
                 probeHttp(stream, fc.userAgent);
                 FeedHooks hooks;
                 hooks.log = [](const std::string &m) { spikeLog("%s", m.c_str()); };
