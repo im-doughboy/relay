@@ -5,6 +5,7 @@
 
 struct FeedConfig {
     std::string url;
+    std::string userAgent = "Relay/0.5.2";
     std::string name;
     std::string appId;
     std::string windowId;

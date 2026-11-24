@@ -145,7 +145,10 @@ void runFeed(const FeedConfig &cfg, const FeedHooks &hooks, std::atomic<bool> &q
     fmt->interrupt_callback.callback = interruptCb;
     fmt->interrupt_callback.opaque = &quit;
     AVDictionary *opts = nullptr;
-    av_dict_set(&opts, "user_agent", "Relay", 0);
+    av_dict_set(&opts, "user_agent", cfg.userAgent.c_str(), 0);
+    // Live streams can't seek; without this FFmpeg asks for "Range: bytes=0-",
+    // which some providers answer with an unusual 4xx error.
+    av_dict_set(&opts, "seekable", "0", 0);
     av_dict_set(&opts, "reconnect", "1", 0);
     av_dict_set(&opts, "reconnect_streamed", "1", 0);
     av_dict_set(&opts, "reconnect_delay_max", "5", 0);

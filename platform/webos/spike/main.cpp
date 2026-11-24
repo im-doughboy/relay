@@ -9,6 +9,7 @@
 //   type=media                uMediaServer media type (default "media")
 //   transport=                optional mediaTransportType, e.g. HLS or URI
 //   mode=feed                 feed (default): FFmpeg reads, Starfish decodes; ums: the TV's URL player
+//   ua=VLC/3.0                user agent sent to the provider (default Relay/0.5.2)
 //   audio=0                   feed mode: video only
 //   window=1                  1 = hand the video an exported window (webOS 5+)
 //   channel=ESPN              with a playlist url: play the first live channel whose name has this
@@ -153,6 +154,23 @@ static std::string pickChannel(const std::string &m3u, const std::string &want, 
     return {};
 }
 
+
+// Logs what the provider answers before FFmpeg tries, so a refusal shows its
+// real HTTP code. Only the status lines are logged (the address has the login).
+static void probeHttp(const std::string &url, const std::string &ua)
+{
+    std::string q = "'"; for (char c : url) { if (c == '\'') q += "'\\''"; else q += c; } q += "'";
+    // One short request (3 s), so it doesn't hold a provider connection slot.
+    std::string cmd = "curl -s -k -L -o /dev/null --max-time 3 -A '" + ua + "' -D - " + q
+                    + " 2>&1 | grep -iE '^HTTP/|^server:|^content-type:'";
+    FILE *p = popen(cmd.c_str(), "r");
+    std::string out; char buf[512];
+    while (p && fgets(buf, sizeof buf, p)) { std::string l(buf); while (!l.empty() && (l.back()=='\n'||l.back()=='\r')) l.pop_back(); out += (out.empty() ? "" : " | ") + l; }
+    if (p) pclose(p);
+    spikeLog("http check: %s", out.empty() ? "(no answer)" : out.c_str());
+    sleep(1);
+}
+
 using uMediaServer::uMediaClient;
 
 class Player : public uMediaClient {
@@ -245,7 +263,7 @@ int main(int argc, char **argv)
     if (g_logFile) g_logFd = fileno(g_logFile);
     for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE }) signal(sig, onCrash);
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.4, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.5, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     SDL_SetHint(SDL_HINT_WEBOS_REGISTER_APP, "true");
@@ -315,6 +333,8 @@ int main(int argc, char **argv)
                 FeedConfig fc;
                 fc.url = stream; fc.name = name; fc.appId = kAppId; fc.windowId = windowId;
                 fc.audio = conf["audio"] != "0";
+                if (conf.count("ua")) fc.userAgent = conf["ua"];
+                probeHttp(stream, fc.userAgent);
                 FeedHooks hooks;
                 hooks.log = [](const std::string &m) { spikeLog("%s", m.c_str()); };
                 hooks.status = [](int st, const std::string &a, const std::string &b) { setStatus(st, a, b); };
