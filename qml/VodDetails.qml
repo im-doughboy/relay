@@ -44,7 +44,7 @@ FocusScope {
 
     function open(k, id, pre) {
         kind = k
-        itemId = id
+        itemId = id || ""   // never undefined: that would stop here, before the keys come to this page
         preview = pre || ({})
         info = ({})
         failure = ""

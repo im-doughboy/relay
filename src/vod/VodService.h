@@ -152,6 +152,9 @@ public:
 
     Q_INVOKABLE void ensureLoaded();       // load on first use (cache or network)
     Q_INVOKABLE void reload();             // fetch again from the server
+    // Let go of the loaded catalogue (a TV, a while after Movies & series
+    // closed): the next ensureLoaded() reads it again from the saved copy.
+    Q_INVOKABLE void release();
     // Fetch details for an item in the grid (row) or by kind/id; answers
     // with detailsReady(details). See VodParser for the keys; added here:
     // kind, id, key, favorite, pos, dur, watched, resumeIndex (series),

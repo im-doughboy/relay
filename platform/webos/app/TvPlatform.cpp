@@ -1,6 +1,7 @@
 #include "TvPlatform.h"
 
 #include "TvLuna.h"
+#include "TvStack.h"
 #include "qsdlintegration.h"
 
 #include <SDL2/SDL.h>
@@ -16,11 +17,18 @@
 #include <cstring>
 #include <fcntl.h>
 #include <string>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <ucontext.h>
 #include <unistd.h>
 
 Q_IMPORT_PLUGIN(QSdlIntegrationPlugin)
+
+namespace {
+QByteArray g_base;   // see tvDataBase()
+} // namespace
+
+QByteArray tvDataBase() { return g_base; }
 
 namespace {
 // Before Relay's own log exists (it starts once Qt does).
@@ -32,6 +40,7 @@ void early(const char *what, const char *detail = "")
 // A crash leaves its address in <data>/crash.log (with where the program was
 // loaded), to look up in the unstripped relay.debug that build-app.sh keeps.
 char g_crashPath[512];
+TvSafeReader g_crashStack;   // the crashed thread's stack, read without running off its end
 
 void writeAll(int fd, const char *s) { if (write(fd, s, strlen(s)) < 0) {} }
 
@@ -40,9 +49,12 @@ void onCrash(int sig, siginfo_t *, void *context)
     const int fd = open(g_crashPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
         const auto *uc = static_cast<const ucontext_t *>(context);
-        char line[160];
-        snprintf(line, sizeof line, "Relay crashed: signal %d at pc %08lx lr %08lx\n", sig,
-                 static_cast<unsigned long>(uc->uc_mcontext.arm_pc), static_cast<unsigned long>(uc->uc_mcontext.arm_lr));
+        char thread[17] = "";
+        prctl(PR_GET_NAME, thread, 0, 0, 0);
+        char line[200];
+        snprintf(line, sizeof line, "Relay crashed: signal %d at pc %08lx lr %08lx sp %08lx in thread \"%s\"\n", sig,
+                 static_cast<unsigned long>(uc->uc_mcontext.arm_pc), static_cast<unsigned long>(uc->uc_mcontext.arm_lr),
+                 static_cast<unsigned long>(uc->uc_mcontext.arm_sp), thread);
         writeAll(fd, line);
         const int maps = open("/proc/self/maps", O_RDONLY);
         if (maps >= 0) {
@@ -52,6 +64,12 @@ void onCrash(int sig, siginfo_t *, void *context)
                 if (write(fd, buf, size_t(n)) < 0) break;
             close(maps);
         }
+        // The calls that led here: words on the crashed thread's stack that
+        // point into Relay's own code (look them up in relay.debug). Not every
+        // one is a real return address, but the real ones are among them.
+        writeAll(fd, "stack:");
+        tvWriteStackWords(fd, g_crashStack, uc->uc_mcontext.arm_sp, 48);
+        writeAll(fd, "\n");
         close(fd);
     }
     signal(sig, SIG_DFL);
@@ -72,8 +90,16 @@ bool tvPrepare()
     // developer storage, which keeps them across updates and restarts.
     const char *override = std::getenv("RELAY_DATA");
     const std::string base = override && *override ? override : "/media/developer/temp/relay";
+    g_base = QByteArray::fromStdString(base);
     for (const char *sub : { "/config", "/data", "/cache", "/videos" }) makeDir(base + sub);
     snprintf(g_crashPath, sizeof g_crashPath, "%s/crash.log", base.c_str());
+    // If the TV runs out of memory, Relay is the first to go, rather than one
+    // of the TV's own services (losing those can restart the whole TV).
+    if (FILE *oom = std::fopen("/proc/self/oom_score_adj", "w")) {
+        std::fputs("1000", oom);
+        std::fclose(oom);
+    }
+    g_crashStack.open();
     struct sigaction sa{};
     sa.sa_sigaction = onCrash;
     sa.sa_flags = SA_SIGINFO;

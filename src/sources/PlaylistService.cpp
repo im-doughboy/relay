@@ -108,10 +108,19 @@ void PlaylistService::loadM3u(const QString &location)
     auto parseAsync = [this, gen, url](QByteArray data) {
         setStatus(QStringLiteral("Reading channels…"));
         QtConcurrent::run([data, url] {
-            PlaylistResult r = M3uParser::parse(data);
-            if (r.epgUrl.isEmpty()) r.epgUrl = XtreamParser::guideUrlForPlaylist(url);
             XtreamParser::Credentials c;
-            if (XtreamParser::credentialsFromPlaylistUrl(url, &c)) {
+            const bool xtream = XtreamParser::credentialsFromPlaylistUrl(url, &c);
+#ifdef RELAY_WEBOS
+            // A TV's memory can't hold an Xtream playlist's movie and episode
+            // entries (300,000+ in some), and the server's own lists replace
+            // them; a computer keeps them in case those lists don't load.
+            const bool keepVod = !xtream;
+#else
+            const bool keepVod = true;
+#endif
+            PlaylistResult r = M3uParser::parse(data, keepVod);
+            if (r.epgUrl.isEmpty()) r.epgUrl = XtreamParser::guideUrlForPlaylist(url);
+            if (xtream) {
                 r.xtreamServer = c.server;
                 r.xtreamUser = c.username;
                 r.xtreamPassword = c.password;

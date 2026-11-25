@@ -29,7 +29,7 @@ list(FILTER RELAY_SOURCES EXCLUDE REGEX "/src/player/MpvItem\\.|/src/cast/Remuxe
 file(GLOB QRCODE CONFIGURE_DEPENDS ${RELAY}/src/third_party/qrcodegen/*.cpp)
 
 qt_add_executable(relay ${RELAY}/src/main.cpp ${RELAY_SOURCES} ${QRCODE}
-    TvPlatform.cpp TvPlatform.h TvLuna.cpp TvLuna.h TvRemote.cpp TvVideo.cpp TvVideo.h)
+    TvPlatform.cpp TvPlatform.h TvLuna.cpp TvLuna.h TvRemote.cpp TvStack.cpp TvStack.h TvWatchdog.cpp TvPlayer.cpp TvPlayer.h TvVideo.cpp TvVideo.h)
 target_compile_definitions(relay PRIVATE RELAY_WEBOS RELAY_VERSION="${RELAY_VERSION}")
 target_include_directories(relay PRIVATE ${RELAY}/src ${CMAKE_CURRENT_SOURCE_DIR} ${QPA}
     ${WEBOS_SYSROOT}/usr/include/glib-2.0 ${WEBOS_SYSROOT}/usr/lib/glib-2.0/include)
@@ -55,7 +55,13 @@ qt_add_resources(relay "relay_icons" PREFIX "/icons" FILES ${RELAY}/packaging/ic
 
 target_link_libraries(relay PRIVATE qsdl
     Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Concurrent Qt6::OpenGL Qt6::Sql
-    SDL2 luna-service2 glib-2.0 ${WEBOS_SYSROOT}/usr/lib/libssl.a ${WEBOS_SYSROOT}/usr/lib/libcrypto.a GLESv2 z m dl pthread)
+    SDL2 luna-service2 glib-2.0 ssl crypto GLESv2 z m dl pthread)
 # The TV's own libstdc++ is older than this compiler's; the package ships ours.
 set_target_properties(relay PROPERTIES BUILD_RPATH "$ORIGIN/lib")
+# One OpenSSL: the TV's own (libssl.so.3, libcrypto.so.3). Qt's network code
+# already uses it, and the TV's libraries load it anyway; a second, static
+# copy in Relay got mixed with it and crashed inside OpenSSL
+# (ossl_lib_ctx_get_data, Nov 2026). The static libraries' functions also stay
+# inside Relay, so nothing the TV loads can call into them by mistake.
+target_link_options(relay PRIVATE "LINKER:--exclude-libs,ALL")
 qt_import_qml_plugins(relay)

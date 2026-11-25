@@ -123,7 +123,9 @@ Window {
     // live TV carry on underneath.
     function leaveVod() {
         if (!Player.vodActive) return
-        const d = Player.vod
+        // A copy: Player.vod read from QML is a live view of the property
+        // (Qt 6.5+), which stopVod() below empties.
+        const d = Object.assign({}, Player.vod)
         if (d.kind === "recording") {
             win.playbackError = ""
             Player.stopVod()
@@ -138,8 +140,16 @@ Window {
         saveVodProgress()
         win.playbackError = ""
         Player.stopVod()
-        vodBrowser.openDetails(d.kind === "episode" ? "series" : "movie",
-                               d.kind === "episode" ? d.seriesId : d.id,
+        // The title's page, by its id. Without one (seen with a title from
+        // another playlist), Movies & series instead: a page opened without
+        // an id would leave the keys with live TV underneath.
+        const id = d.kind === "episode" ? (d.seriesId || d.detailsId) : (d.id || d.detailsId)
+        if (!id) {
+            console.warn("Leaving a " + d.kind + " that has no title id; it has: " + Object.keys(d).join(", "))
+            win.openVod(Vod.section)
+            return
+        }
+        vodBrowser.openDetails(d.kind === "episode" ? "series" : "movie", id,
                                { title: d.kind === "episode" ? d.seriesTitle : d.title,
                                  poster: d.kind === "episode" ? d.seriesPoster : d.poster })
     }
@@ -147,7 +157,7 @@ Window {
     // it got to, next to the live channels.
     function multiViewFromVod() {
         if (!Player.vodActive) { openMultiView(); return }
-        const d = Player.vod
+        const d = Object.assign({}, Player.vod)   // a copy: stopVod() below empties Player.vod
         const kind = d.kind
         const at = video.position
         if (kind === "movie" || kind === "episode") saveVodProgress()
@@ -1052,6 +1062,15 @@ Window {
         }
         MenuSeparator { visible: Settings.tv; height: visible ? implicitHeight : 0; contentItem: Rectangle { implicitHeight: 1; color: Theme.border } }
         RelayMenuItem { text: qsTr("Leave Relay"); visible: Settings.tv; enabled: visible; onTriggered: Qt.quit() }
+    }
+
+    // On a TV, the catalogue is let go a while after Movies & series closes
+    // (it can take 200 MB that live TV needs); opening it again reads it back
+    // from the saved copy in a few seconds.
+    Timer {
+        interval: 90000
+        running: Settings.tv && Vod.loaded && !vodBrowser.opened && !recordings.opened && !Player.vodActive
+        onTriggered: Vod.release()
     }
 
     VodBrowser {

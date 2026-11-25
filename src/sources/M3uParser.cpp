@@ -3,6 +3,7 @@
 #include <QStringView>
 #include <QUrl>
 
+#include <algorithm>
 #include <array>
 
 namespace {
@@ -83,14 +84,15 @@ QHash<QString, QString> M3uParser::parseAttributes(const QString &body, QString 
     return attrs;
 }
 
-PlaylistResult M3uParser::parse(const QByteArray &data)
+PlaylistResult M3uParser::parse(const QByteArray &data, bool keepVod)
 {
     PlaylistResult result;
 
-    QString text = QString::fromUtf8(data);
-    if (text.startsWith(QChar(0xFEFF))) text.remove(0, 1);   // UTF-8 BOM
-
-    const QStringList lines = text.split(QLatin1Char('\n'));
+    // Line by line from the downloaded bytes: converting the whole playlist to
+    // one string and then a list of lines needed five or six times its size at
+    // once, which a TV's memory couldn't hold for a large provider playlist.
+    QByteArrayView rest(data);
+    if (rest.startsWith("\xEF\xBB\xBF")) rest = rest.sliced(3);   // UTF-8 BOM
 
     Channel pending;
     bool hasPending = false;
@@ -107,8 +109,11 @@ PlaylistResult M3uParser::parse(const QByteArray &data)
         pendingRef.clear();
     };
 
-    for (QString line : lines) {
-        line = line.trimmed();
+    while (!rest.isEmpty()) {
+        const qsizetype end = rest.indexOf('\n');
+        const QByteArrayView raw = end < 0 ? rest : rest.first(end);
+        rest = end < 0 ? QByteArrayView() : rest.sliced(end + 1);
+        const QString line = QString::fromUtf8(raw).trimmed();
         if (line.isEmpty()) continue;
 
         if (line.startsWith(QLatin1String("#EXTM3U"), Qt::CaseInsensitive)) {
@@ -165,6 +170,15 @@ PlaylistResult M3uParser::parse(const QByteArray &data)
         // like URLs, so an HTML error page isn't mistaken for a playlist.
         if (!hasPending && !line.contains(QLatin1String("://"))) continue;
 
+        if (!keepVod) {   // movies and episodes only counted
+            const Kind kind = classify(line);
+            if (kind != Kind::Live) {
+                ++(kind == Kind::Movie ? result.skippedMovies : result.skippedSeries);
+                resetPending();
+                continue;
+            }
+        }
+
         Channel ch = hasPending ? pending : Channel();
         ch.url = line;
         if (ch.name.isEmpty()) ch.name = fallbackNameFromUrl(line);
@@ -178,19 +192,21 @@ PlaylistResult M3uParser::parse(const QByteArray &data)
 
     // Keep live TV only. If the whole playlist is on-demand video (say, a
     // list of the user's own files), keep it all rather than show nothing.
-    QVector<Channel> live, movies, series;
-    live.reserve(result.channels.size());
-    for (const Channel &c : std::as_const(result.channels)) {
-        switch (classify(c.url)) {
-        case Kind::Live: live.push_back(c); break;
-        case Kind::Movie: movies.push_back(c); break;
-        case Kind::Series: series.push_back(c); break;
+    // (Entries move rather than copy: a large playlist holds 100,000 of them.)
+    const bool anyLive = std::any_of(result.channels.cbegin(), result.channels.cend(),
+                                     [](const Channel &c) { return classify(c.url) == Kind::Live; });
+    if (anyLive) {
+        QVector<Channel> live, movies, series;
+        for (Channel &c : result.channels) {
+            switch (classify(c.url)) {
+            case Kind::Live: live.push_back(std::move(c)); break;
+            case Kind::Movie: movies.push_back(std::move(c)); break;
+            case Kind::Series: series.push_back(std::move(c)); break;
+            }
         }
-    }
-    if (!live.isEmpty()) {
         result.channels = std::move(live);
-        result.skippedMovies = movies.size();
-        result.skippedSeries = series.size();
+        result.skippedMovies += movies.size();   // plus any only counted (keepVod off)
+        result.skippedSeries += series.size();
         result.vodMovies = std::move(movies);
         result.vodEpisodes = std::move(series);
     }

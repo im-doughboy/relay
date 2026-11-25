@@ -28,6 +28,10 @@
 #include <QUrlQuery>
 #include <QtConcurrent>
 
+#ifdef RELAY_WEBOS
+#include <malloc.h>
+#endif
+
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -179,7 +183,14 @@ VodService::VodService(UserLibrary *library, const QString &cacheDir, QObject *p
 {
     m_items->setLibrary(library);
     connect(m_tmdb, &TmdbClient::keyRejected, this, &VodService::tmdbKeyRejected);
-    m_combine = QSettings().value(QStringLiteral("vod/combine"), true).toBool();
+#ifdef RELAY_WEBOS
+    // On a TV each playlist's catalogue on its own unless turned on in
+    // Settings: several together take more memory than a TV gives an app.
+    const bool combineByDefault = false;
+#else
+    const bool combineByDefault = true;
+#endif
+    m_combine = QSettings().value(QStringLiteral("vod/combine"), combineByDefault).toBool();
     // Other playlists' catalogues arrive one by one: merged once they settle.
     m_mergeTimer = new QTimer(this);
     m_mergeTimer->setSingleShot(true);
@@ -489,8 +500,12 @@ void VodService::setSource(const PlaylistResult &result)
                               ? QStringLiteral("VOD: using the server's movie and series lists")
                               : QStringLiteral("VOD: using the playlist's %1 movie and %2 episode entries")
                                     .arg(m_m3uMovies.size()).arg(m_m3uEpisodes.size()));
+#ifndef RELAY_WEBOS
     // Have it ready by the time someone opens Movies; the cache makes this cheap.
     QTimer::singleShot(6000, this, &VodService::ensureLoaded);
+#endif
+    // On a TV it loads when Movies & series opens: a large catalogue (or
+    // several playlists' together) takes 150 MB or more that live TV needs.
 }
 
 void VodService::clear()
@@ -533,14 +548,52 @@ void VodService::clear()
 
 void VodService::ensureLoaded()
 {
-    for (const Extra &e : std::as_const(m_extras)) e.svc->ensureLoaded();
+    // Other playlists' catalogues only show when combined.
+    if (m_combine) for (const Extra &e : std::as_const(m_extras)) e.svc->ensureLoaded();
     if (m_mode == Mode::None || m_loaded || m_loading) return;
     loadFromCacheOrNetwork(false);
 }
 
+void VodService::release()
+{
+    for (const Extra &e : std::as_const(m_extras)) e.svc->release();
+    if (!m_loaded && !m_loading) return;
+    qInfo().noquote() << "VOD: letting go of the catalogue until Movies & series opens again";
+    ++m_generation;   // a load still on its way is dropped
+    m_movies.clear();
+    m_series.clear();
+    m_movieCats.clear();
+    m_seriesCats.clear();
+    m_movieFolded.clear();
+    m_seriesFolded.clear();
+    m_movieIndex.clear();
+    m_seriesIndex.clear();
+    m_ownMovies.clear();
+    m_ownSeries.clear();
+    m_ownMovieCats.clear();
+    m_ownSeriesCats.clear();
+    m_ownMovieFolded.clear();
+    m_ownSeriesFolded.clear();
+    m_sourcesOf.clear();
+    m_m3uEpisodeMap.clear();
+    m_seriesDetails.clear();
+    m_recentDetails.clear();
+    m_loaded = false;
+    m_loading = false;
+    m_status.clear();
+    emit stateChanged();
+    rebuildCategories();
+    rebuild();
+#ifdef RELAY_WEBOS
+    // Hand the freed memory back to the TV (the C library would otherwise
+    // keep it for Relay's own later use): the TV judges apps by what they hold.
+    QTimer::singleShot(0, this, [] { malloc_trim(0); });
+#endif
+}
+
 void VodService::reload()
 {
-    for (const Extra &e : std::as_const(m_extras)) e.svc->reload();
+    if (m_combine) for (const Extra &e : std::as_const(m_extras)) e.svc->reload();
     if (m_mode == Mode::None || m_loading) return;
     m_seriesDetails.clear();
     loadFromCacheOrNetwork(true);

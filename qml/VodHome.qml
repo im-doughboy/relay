@@ -50,6 +50,8 @@ FocusScope {
         return out
     }
 
+    // A row of posters' height (not the selected row), for rows still being made.
+    property real shelfH: cardH + 80
     function keyOf(item) { return item ? item.kind + ":" + item.id : "" }
     function infoOf(item) { return item ? root.infos[keyOf(item)] || null : null }
 
@@ -90,7 +92,13 @@ FocusScope {
         selected = item
         stopTrailer()
         if (item) detailsTimer.restart()
+        // On a TV the selected card widens (with its backdrop, logo and badges)
+        // once the remote rests on it, as TV apps do: moving through the
+        // titles only slides the posters, which a TV draws smoothly.
+        if (Settings.tv) { settled = false; settleTimer.restart() }
     }
+    property bool settled: true
+    Timer { id: settleTimer; interval: 350; onTriggered: root.settled = true }
     function playItem(item) {
         if (!item) return
         const info = infoOf(item)
@@ -242,9 +250,11 @@ FocusScope {
     }
     readonly property bool trailerShowing: trailer.visible
     // Rounded corners where Qt can (6.5+) and the graphics draw effects
-    // (software drawing doesn't: the corners stay square there).
-    property Component roundedFx: Qt.createComponent("RoundedEffect.qml", Component.PreferSynchronous)
-    readonly property bool canRound: roundedFx.status === Component.Ready
+    // (software drawing doesn't: the corners stay square there). Not on a TV:
+    // each rounded card is drawn twice (once offscreen), which a TV's
+    // graphics can't keep up with while the rows scroll.
+    property Component roundedFx: Settings.tv ? null : Qt.createComponent("RoundedEffect.qml", Component.PreferSynchronous)
+    readonly property bool canRound: !!roundedFx && roundedFx.status === Component.Ready
                                      && root.GraphicsInfo.api !== GraphicsInfo.Software && root.GraphicsInfo.api !== GraphicsInfo.Unknown
 
     // ---- The page ---------------------------------------------------------------
@@ -346,16 +356,24 @@ FocusScope {
             required property var modelData
             required property int index
             readonly property bool isCurrent: rows.currentIndex === index
+            readonly property bool isShelf: modelData.type === "shelf"
             width: rows.width
-            height: loader.item ? loader.item.height : 0
+            // While a row of posters is still being made (on a TV, a little at
+            // a time), it already takes a row's room, so nothing jumps.
+            height: loader.item ? loader.item.height : (isShelf ? root.shelfH : 0)
             Loader {
                 id: loader
                 width: parent.width
                 property var entry: entry.modelData
                 property int entryIndex: entry.index
                 property bool isCurrent: entry.isCurrent
+                // On a TV a row of posters is made over several frames instead of
+                // in one go (which held the screen up to a second or more when a
+                // new row came into reach); rows are made before they're in view.
+                asynchronous: Settings.tv && entry.isShelf
                 sourceComponent: entry.modelData.type === "hero" ? heroComp
                                : entry.modelData.type === "chips" ? chipsComp : shelfComp
+                onLoaded: if (entry.isShelf && !entry.isCurrent) root.shelfH = item.height
             }
         }
 
@@ -620,10 +638,13 @@ FocusScope {
         Column {
             id: shelf
             readonly property var data_: parent.entry.shelf
+            // Once per row: reading data_.items converts the row's whole list,
+            // which each card did again for its one title.
+            readonly property var items: data_.items
             readonly property int row: parent.entryIndex
             readonly property bool keys: parent.isCurrent && rows.activeFocus
             readonly property int at: rows.col(row)
-            readonly property var current: data_.items[at] || null
+            readonly property var current: items[at] || null
             readonly property var currentInfo: keys ? root.infoOf(current) : null
             width: parent.width
             spacing: 10
@@ -659,7 +680,7 @@ FocusScope {
                 width: parent.width
                 height: root.cardH
                 orientation: ListView.Horizontal
-                model: shelf.data_.items.length + 1     // + See all
+                model: shelf.items.length + 1     // + See all
                 spacing: Math.round(root.cardW * 0.06)
                 currentIndex: shelf.at
                 interactive: false
@@ -670,7 +691,9 @@ FocusScope {
                 highlightMoveDuration: 240
                 highlightMoveVelocity: -1
                 highlightResizeDuration: 0
-                cacheBuffer: root.wideW * 2
+                // A TV makes one card ahead (more as the row moves): a new row
+                // then costs about half as much while moving down the rows.
+                cacheBuffer: Settings.tv ? root.cardW : root.wideW * 2
 
                 // Grab and drag the posters along (any row; the selected row's
                 // card follows). A click still opens the title.
@@ -683,7 +706,7 @@ FocusScope {
                     onTranslationChanged: {
                         if (!active) return
                         const step = Math.round(-translation.x / (root.cardW + cards.spacing))
-                        const c = Math.max(0, Math.min(shelf.data_.items.length, startCol + step))
+                        const c = Math.max(0, Math.min(shelf.items.length, startCol + step))
                         if (c === shelf.at) return
                         rows.setCol(shelf.row, c)
                         if (shelf.row === rows.currentIndex) root.syncSelection()
@@ -693,11 +716,11 @@ FocusScope {
                 delegate: Item {
                     id: card
                     required property int index
-                    readonly property bool isMore: index === shelf.data_.items.length
-                    readonly property var item: isMore ? null : shelf.data_.items[index]
+                    readonly property bool isMore: index === shelf.items.length
+                    readonly property var item: isMore ? null : shelf.items[index]
                     readonly property bool sel: shelf.keys && index === shelf.at
-                    readonly property var info: sel ? root.infoOf(item) : null
-                    readonly property bool wide: sel && !isMore
+                    readonly property bool wide: sel && !isMore && root.settled
+                    readonly property var info: wide ? root.infoOf(item) : null
                     width: wide ? root.wideW : root.cardW
                     height: root.cardH
                     Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
@@ -732,7 +755,8 @@ FocusScope {
                             source: card.wide && card.info && card.info.backdrop ? card.info.backdrop : ""
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
-                            sourceSize.width: 960
+                            // A TV decodes (and uploads) it at the card's size, not larger.
+                            sourceSize.width: Settings.tv ? root.wideW : 960
                             opacity: status === Image.Ready && !(root.trailerShowing && root.trailerHost === frame) ? 1 : 0
                             Behavior on opacity { NumberAnimation { duration: 300 } }
                         }
@@ -749,35 +773,40 @@ FocusScope {
                             verticalAlignment: Text.AlignVCenter
                             elide: Text.ElideRight
                         }
-                        // Widened: the title (logo where TMDB has one) and badges over the picture.
-                        Rectangle {
-                            visible: card.wide
-                            anchors.bottom: parent.bottom
-                            width: parent.width
-                            height: parent.height * 0.5
-                            gradient: Gradient {
-                                GradientStop { position: 0.0; color: "transparent" }
-                                GradientStop { position: 1.0; color: "#B0000000" }
+                        // Widened: the title (logo where TMDB has one) and badges over
+                        // the picture. Made only for the widened card: every card
+                        // making (and hiding) them slowed each new row.
+                        Loader {
+                            anchors.fill: parent
+                            active: card.wide
+                            sourceComponent: Item {
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width
+                                    height: parent.height * 0.5
+                                    gradient: Gradient {
+                                        GradientStop { position: 0.0; color: "transparent" }
+                                        GradientStop { position: 1.0; color: "#B0000000" }
+                                    }
+                                }
+                                TitleArt {
+                                    anchors.left: parent.left
+                                    anchors.bottom: parent.bottom
+                                    anchors.margins: Math.round(root.cardH * 0.06)
+                                    item: card.item
+                                    info: card.info
+                                    maxWidth: root.wideW * 0.42
+                                    maxHeight: root.cardH * 0.26
+                                    fontSize: Math.round(root.cardH * 0.1)
+                                }
+                                Badges {
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    anchors.margins: Math.round(root.cardH * 0.06)
+                                    list: root.badges(card.item, card.info).slice(0, 2)
+                                    fontSize: root.font1 - 5
+                                }
                             }
-                        }
-                        TitleArt {
-                            visible: card.wide
-                            anchors.left: parent.left
-                            anchors.bottom: parent.bottom
-                            anchors.margins: Math.round(root.cardH * 0.06)
-                            item: card.item
-                            info: card.info
-                            maxWidth: root.wideW * 0.42
-                            maxHeight: root.cardH * 0.26
-                            fontSize: Math.round(root.cardH * 0.1)
-                        }
-                        Badges {
-                            visible: card.wide
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.margins: Math.round(root.cardH * 0.06)
-                            list: root.badges(card.item, card.info).slice(0, 2)
-                            fontSize: root.font1 - 5
                         }
                         // Watched part.
                         Rectangle {
@@ -797,13 +826,15 @@ FocusScope {
                             color: "#CC0B0D12"
                             Text { anchors.centerIn: parent; text: "✓"; color: Theme.accent; font.pixelSize: 14; font.weight: Font.Bold }
                         }
-                        // See all
-                        Column {
-                            visible: card.isMore
+                        // See all (the last card only)
+                        Loader {
                             anchors.centerIn: parent
-                            spacing: 6
-                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("See all"); color: Theme.text; font.pixelSize: root.font1 + 2; font.weight: Font.DemiBold }
-                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: Number(shelf.data_.count).toLocaleString(Qt.locale(), "f", 0); color: Theme.textMuted; font.pixelSize: root.font1 - 4 }
+                            active: card.isMore
+                            sourceComponent: Column {
+                                spacing: 6
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("See all"); color: Theme.text; font.pixelSize: root.font1 + 2; font.weight: Font.DemiBold }
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: Number(shelf.data_.count).toLocaleString(Qt.locale(), "f", 0); color: Theme.textMuted; font.pixelSize: root.font1 - 4 }
+                            }
                         }
                     }
                     // The selected card's outline.

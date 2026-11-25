@@ -239,6 +239,7 @@ FocusScope {
 
     Connections {
         target: Channels
+        enabled: guide.opened   // closed, it has no rows to place
         function onCurrentGroupChanged() {
             const row = Channels.rowOf(Player.currentIndex)
             list.currentIndex = row >= 0 ? row : 0
@@ -566,7 +567,10 @@ FocusScope {
         anchors.bottom: parent.bottom
         width: parent.width
         clip: true
-        model: Channels
+        // Only while open: a hidden list still builds its rows, and each
+        // guide row queries the guide and builds its programmes, so every
+        // change to the channels (a group, the channel list) cost seconds on a TV.
+        model: guide.opened ? Channels : null
         focus: true
         highlightMoveDuration: 0
         highlightFollowsCurrentItem: false

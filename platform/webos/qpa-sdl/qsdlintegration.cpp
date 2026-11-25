@@ -35,6 +35,34 @@ bool g_onScreen = true;
 
 QRect screenRect() { return QRect(QPoint(), g_size); }
 
+// How responsive the screen is, for the log: how long a button press takes
+// to show (press to the next frame on screen), how long frames take to draw,
+// and how long the main thread was held up. All on the main thread.
+struct Responsiveness {
+    QElapsedTimer clock;
+    qint64 keyAt = -1;        // a press waiting for its frame (ms)
+    qint64 frameStart = -1;   // first makeCurrent of the frame being drawn (ms)
+    int keys = 0, frames = 0, slowFrames = 0, stalls = 0;
+    qint64 keySum = 0, keyMax = 0, frameMax = 0, stallMax = 0;
+    qint64 since = 0;
+    // Time between one frame on screen and the next, while things move
+    // (under 200 ms): up to 20 ms is 60 frames a second, 20-40 ms is 30.
+    int gaps60 = 0, gaps30 = 0, gapsSlower = 0;
+    qint64 lastSwap = -1;
+    // Handing a frame to the TV's compositor (SDL_GL_SwapWindow), which waits
+    // when the compositor isn't ready; and press -> its frame starting.
+    qint64 swapSum = 0, swapMax = 0, startSum = 0, startMax = 0;
+    int swaps = 0, slowSwaps = 0, starts = 0;
+    bool keyStartPending = false;
+    qint64 now() { if (!clock.isValid()) clock.start(); return clock.elapsed(); }
+    void reset(qint64 t)
+    {
+        keys = frames = slowFrames = stalls = gaps60 = gaps30 = gapsSlower = swaps = slowSwaps = starts = 0;
+        keySum = keyMax = frameMax = stallMax = swapSum = swapMax = startSum = startMax = 0;
+        since = t;
+    }
+} g_resp;
+
 class QSdlScreen : public QPlatformScreen
 {
 public:
@@ -72,6 +100,15 @@ public:
     {
         // Nothing to show in the background (and the TV may have taken the surface).
         if (surface->surface()->surfaceClass() != QSurface::Window || !g_onScreen) return;
+        if (g_resp.frameStart >= 0) {   // drawing time of this frame
+            const qint64 took = g_resp.now() - g_resp.frameStart;
+            if (took < 1000) {          // (older: a makeCurrent that drew nothing)
+                ++g_resp.frames;
+                g_resp.frameMax = qMax(g_resp.frameMax, took);
+                if (took > 33) ++g_resp.slowFrames;
+            }
+            g_resp.frameStart = -1;
+        }
         // At most 60 frames a second, whatever Qt asks for.
         constexpr qint64 kFrameNs = 1000000000LL / 60;
         const qint64 now = m_clock.nsecsElapsed();
@@ -80,10 +117,46 @@ public:
             timespec ts{ time_t(wait / 1000000000LL), long(wait % 1000000000LL) };
             nanosleep(&ts, nullptr);
         }
+        const qint64 swapStart = g_resp.now();
         SDL_GL_SwapWindow(g_window);
         m_last = m_clock.nsecsElapsed();
+        {
+            const qint64 t = g_resp.now();
+            const qint64 swapTook = t - swapStart;
+            ++g_resp.swaps;
+            g_resp.swapSum += swapTook;
+            g_resp.swapMax = qMax(g_resp.swapMax, swapTook);
+            if (swapTook > 20) ++g_resp.slowSwaps;
+            if (g_resp.lastSwap >= 0) {
+                const qint64 gap = t - g_resp.lastSwap;
+                if (gap <= 20) ++g_resp.gaps60;
+                else if (gap <= 40) ++g_resp.gaps30;
+                else if (gap < 200) ++g_resp.gapsSlower;
+            }
+            g_resp.lastSwap = t;
+        }
+        if (g_resp.keyAt >= 0) {        // a button press is on screen now
+            const qint64 took = g_resp.now() - g_resp.keyAt;
+            ++g_resp.keys;
+            g_resp.keySum += took;
+            g_resp.keyMax = qMax(g_resp.keyMax, took);
+            g_resp.keyAt = -1;
+        }
     }
-    bool makeCurrent(QPlatformSurface *) override { return SDL_GL_MakeCurrent(g_window, g_context) == 0; }
+    bool makeCurrent(QPlatformSurface *surface) override
+    {
+        if (surface && surface->surface()->surfaceClass() == QSurface::Window && g_resp.frameStart < 0) {
+            g_resp.frameStart = g_resp.now();
+            if (g_resp.keyAt >= 0 && g_resp.keyStartPending) {   // a press: how soon its frame began
+                const qint64 took = g_resp.frameStart - g_resp.keyAt;
+                ++g_resp.starts;
+                g_resp.startSum += took;
+                g_resp.startMax = qMax(g_resp.startMax, took);
+                g_resp.keyStartPending = false;
+            }
+        }
+        return SDL_GL_MakeCurrent(g_window, g_context) == 0;
+    }
     void doneCurrent() override {}   // SDL's is the only context
     bool isValid() const override { return g_window && g_context; }
     QFunctionPointer getProcAddress(const char *name) override
@@ -206,8 +279,34 @@ private:
         SDL_GetWindowSize(g_window, &ww, &wh);
         return QPointF(x * double(g_size.width()) / qMax(1, ww), y * double(g_size.height()) / qMax(1, wh));
     }
+    // The responsiveness line in the log, every 10 s while the remote is used
+    // (or the main thread was held up).
+    void measure()
+    {
+        const qint64 t = g_resp.now();
+        if (m_lastPoll > 0 && t - m_lastPoll > 150) {   // this timer is due every 4 ms
+            ++g_resp.stalls;
+            g_resp.stallMax = qMax(g_resp.stallMax, t - m_lastPoll);
+        }
+        m_lastPoll = t;
+        if (g_resp.keyAt >= 0 && t - g_resp.keyAt > 3000) { g_resp.keyAt = -1; g_resp.keyStartPending = false; }   // changed nothing
+        if (t - g_resp.since < 10000) return;
+        if (g_resp.keys > 0 || g_resp.stallMax > 250)
+            qInfo("Screen: %d presses showed in %lld ms on average, slowest %lld ms (their frames began after %lld ms"
+                  " on average, slowest %lld) · %d frames drawn, slowest %lld ms (%d over 33 ms) · frame gaps while"
+                  " moving: %d at 60/s, %d at 30/s, %d slower · handing frames to the TV: %lld ms on average,"
+                  " slowest %lld, %d over 20 ms · main thread held up %d times, longest %lld ms",
+                  g_resp.keys, g_resp.keys ? g_resp.keySum / g_resp.keys : 0, g_resp.keyMax,
+                  g_resp.starts ? g_resp.startSum / g_resp.starts : 0, g_resp.startMax, g_resp.frames,
+                  g_resp.frameMax, g_resp.slowFrames, g_resp.gaps60, g_resp.gaps30, g_resp.gapsSlower,
+                  g_resp.swaps ? g_resp.swapSum / g_resp.swaps : 0, g_resp.swapMax, g_resp.slowSwaps,
+                  g_resp.stalls, g_resp.stallMax);
+        g_resp.reset(t);
+    }
+
     void poll()
     {
+        measure();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             QWindow *w = target();
@@ -232,6 +331,11 @@ private:
                 }
                 if (!key) break;
                 if (!w) break;
+                // From here until its frame is on screen (OK acts when it comes up).
+                if (g_resp.keyAt < 0 && (key == Qt::Key_Return ? e.type == SDL_KEYUP : e.type == SDL_KEYDOWN)) {
+                    g_resp.keyAt = g_resp.now();
+                    g_resp.keyStartPending = true;
+                }
                 // Printable keys carry their text unless a text field gets it
                 // from SDL's text input instead.
                 QString text;
@@ -320,6 +424,7 @@ private:
     }
 
     QTimer m_timer;
+    qint64 m_lastPoll = 0;
     QPointF m_pointer;
     Qt::MouseButtons m_buttons;
     QSet<int> m_seen;

@@ -15,8 +15,11 @@ class M3uParser
 public:
     // Returns live channels only. Movie and series entries (common in
     // Xtream "m3u_plus" playlists) are counted in skippedMovies/skippedSeries
-    // and left out, unless the playlist has nothing else.
-    static PlaylistResult parse(const QByteArray &data);
+    // and left out, unless the playlist has nothing else. They're kept in
+    // vodMovies/vodEpisodes when `keepVod`; without it they're only counted
+    // (an Xtream login's playlist on a TV: hundreds of thousands of entries
+    // that the server's own lists replace).
+    static PlaylistResult parse(const QByteArray &data, bool keepVod = true);
 
     enum class Kind { Live, Movie, Series };
     // Xtream VOD URLs look like /movie/user/pass/123.mkv and

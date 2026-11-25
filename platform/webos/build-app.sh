@@ -27,6 +27,14 @@ cp "$BUILD/relay" "$OUT/relay.debug"   # unstripped, for reading crash addresses
 # The TV's own libstdc++ can be older than this compiler's, so ship ours.
 cp -L "$SR/usr/lib/libstdc++.so.6" "$APP/lib/"
 "$STRIP" "$APP/lib/libstdc++.so.6"
+# And the OpenSSL Relay's Qt was built against (3.6): the TV's own is an older
+# 3.0, and a build for a newer OpenSSL mustn't run on an older one. Relay
+# loads this first, so the TV's libraries in the same process use it too
+# (built for 3.0, they're fine on 3.6) and there's one OpenSSL.
+for l in libssl.so.3 libcrypto.so.3; do
+  cp -L "$SR/usr/lib/$l" "$APP/lib/"
+  "$STRIP" "$APP/lib/$l"
+done
 
 cat > "$APP/appinfo.json" <<J
 {

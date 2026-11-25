@@ -6,3 +6,9 @@
 //
 // Returns false when the TV gave no window; Relay then can't run.
 bool tvPrepare();
+
+#include <QByteArray>
+
+// The folder Relay keeps its files in on the TV (settings, guide, logs,
+// crash.log, freeze.log); set by tvPrepare().
+QByteArray tvDataBase();

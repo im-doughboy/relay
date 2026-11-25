@@ -27,6 +27,8 @@ FocusScope {
     }
     function close() {
         if (!opened) return
+        groupSwitch.stop()   // a group only moved to, not gone into: the channels stay as they were
+        pendingGroup = -1
         opened = false
         closed()
     }
@@ -44,14 +46,26 @@ FocusScope {
     // Selecting a group is always explicit (keys or mouse). The list itself
     // resets its selection whenever the group list changes (after hiding,
     // renaming or moving a group), so that must never switch groups.
-    function selectGroup(i) {
+    // `later`: on a TV, moving through the groups with the remote switches the
+    // channels once it stops (each switch rebuilds the channel list, which
+    // takes a TV a second or more); going into the channels switches at once.
+    function selectGroup(i, later) {
         if (i < 0 || i >= groupList.count) return
         syncingGroups = true
         groupList.currentIndex = i
         syncingGroups = false
         groupList.positionViewAtIndex(i, ListView.Contain)
-        Channels.currentGroup = i
+        pendingGroup = i
+        if (later && Settings.tv) groupSwitch.restart()
+        else applyGroup()
     }
+    property int pendingGroup: -1
+    function applyGroup() {
+        groupSwitch.stop()
+        if (pendingGroup >= 0 && pendingGroup !== Channels.currentGroup) Channels.currentGroup = pendingGroup
+        pendingGroup = -1
+    }
+    Timer { id: groupSwitch; interval: 300; onTriggered: root.applyGroup() }
     function syncGroupList() {
         syncingGroups = true
         groupList.currentIndex = Channels.currentGroup
@@ -338,15 +352,15 @@ FocusScope {
             keyNavigationEnabled: false
             onModelChanged: Qt.callLater(root.syncGroupList)
 
-            Keys.onRightPressed: channelList.forceActiveFocus()
-            Keys.onReturnPressed: channelList.forceActiveFocus()
-            Keys.onEnterPressed: channelList.forceActiveFocus()
+            Keys.onRightPressed: { root.applyGroup(); channelList.forceActiveFocus() }
+            Keys.onReturnPressed: { root.applyGroup(); channelList.forceActiveFocus() }
+            Keys.onEnterPressed: { root.applyGroup(); channelList.forceActiveFocus() }
             Keys.onPressed: (e) => {
                 const ctrl = e.modifiers & Qt.ControlModifier
-                if (!ctrl && e.key === Qt.Key_Down) { root.selectGroup(groupList.currentIndex + 1); e.accepted = true }
-                else if (!ctrl && e.key === Qt.Key_Up) { root.selectGroup(groupList.currentIndex - 1); e.accepted = true }
-                else if (e.key === Qt.Key_PageDown) { root.selectGroup(Math.min(groupList.count - 1, groupList.currentIndex + 8)); e.accepted = true }
-                else if (e.key === Qt.Key_PageUp) { root.selectGroup(Math.max(0, groupList.currentIndex - 8)); e.accepted = true }
+                if (!ctrl && e.key === Qt.Key_Down) { root.selectGroup(groupList.currentIndex + 1, true); e.accepted = true }
+                else if (!ctrl && e.key === Qt.Key_Up) { root.selectGroup(groupList.currentIndex - 1, true); e.accepted = true }
+                else if (e.key === Qt.Key_PageDown) { root.selectGroup(Math.min(groupList.count - 1, groupList.currentIndex + 8), true); e.accepted = true }
+                else if (e.key === Qt.Key_PageUp) { root.selectGroup(Math.max(0, groupList.currentIndex - 8), true); e.accepted = true }
                 else if (e.key === Qt.Key_Backspace) { root.close(); e.accepted = true }
                 else if (e.key === Qt.Key_H) { root.hideGroupAt(groupList.currentIndex); e.accepted = true }
                 else if (e.key === Qt.Key_Delete) { root.deleteListAt(groupList.currentIndex); e.accepted = true }
@@ -445,7 +459,9 @@ FocusScope {
             anchors.bottomMargin: 16
             width: parent.width
             clip: true
-            model: Channels
+            // Only while showing (or sliding away): closed, its rows would
+            // still be rebuilt on every change to the channels.
+            model: (root.opened || root.visible) ? Channels : null
             highlightMoveDuration: 0
             boundsBehavior: Flickable.StopAtBounds
             reuseItems: true
