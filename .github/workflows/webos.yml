@@ -19,18 +19,22 @@ on:
       - 'src/cast/**'
       - 'packaging/icons/relay.png'
       - '.github/workflows/webos.yml'
+      - '!**/*.md'
   pull_request:
     paths:
       - 'platform/webos/**'
       - 'src/cast/**'
       - 'packaging/icons/relay.png'
       - '.github/workflows/webos.yml'
+      - '!**/*.md'
   workflow_dispatch:
 
-# A newer push to the same branch makes the older build pointless.
+# On main every run finishes, so a long Qt build still gets cached when
+# another push lands meanwhile (a cancelled run saves no cache). A newer push
+# to a pull request makes the older build pointless.
 concurrency:
   group: webos-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

@@ -222,6 +222,15 @@ void runUi(SDL_Window *window, const std::function<UiStatus()> &status,
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
 
+    // Frames are drawn only when Qt Quick has something new (an animation, a
+    // changed property), and at most 60 a second: that divides the panel's
+    // 120 Hz evenly, so movement is smooth, and an idle screen costs nothing.
+    bool dirty = true;
+    QObject::connect(&control, &QQuickRenderControl::renderRequested, [&dirty] { dirty = true; });
+    QObject::connect(&control, &QQuickRenderControl::sceneChanged, [&dirty] { dirty = true; });
+    constexpr qint64 kFrameNs = 1000000000LL / 60;
+    qint64 nextFrame = 0;
+
     QElapsedTimer clock;
     clock.start();
     int frames = 0;
@@ -279,6 +288,16 @@ void runUi(SDL_Window *window, const std::function<UiStatus()> &status,
         }
         QCoreApplication::processEvents();
         state.set(status());
+
+        const qint64 now0 = clock.nsecsElapsed();
+        if (!dirty || now0 < nextFrame) {
+            // Nothing new, or too soon: wait a little without drawing.
+            const qint64 waitNs = dirty ? nextFrame - now0 : kFrameNs / 4;
+            SDL_Delay(Uint32(qMax<qint64>(1, waitNs / 1000000)));
+            continue;
+        }
+        nextFrame = qMax(nextFrame + kFrameNs, now0);
+        dirty = false;
 
         gl.makeCurrent(&quickWindow);
         control.polishItems();

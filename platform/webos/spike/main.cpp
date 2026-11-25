@@ -323,7 +323,7 @@ int main(int argc, char **argv)
     }
     (void)onCrash;
     signal(SIGPIPE, SIG_IGN);
-    spikeLog("Relay webOS spike 0.0.18, app dir %s", g_appDir.c_str());
+    spikeLog("Relay webOS spike 0.0.19, app dir %s", g_appDir.c_str());
 
     SDL_SetHint(SDL_HINT_WEBOS_ACCESS_POLICY_KEYS_BACK, "true");
     auto conf = readConf();

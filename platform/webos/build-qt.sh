@@ -53,10 +53,27 @@ for m in "${MODULES[@]}"; do
 done
 
 COMMON=(-release -no-pch -nomake examples -nomake tests -no-widgets -no-dbus -no-glib -no-icu
-        -no-feature-sql -qt-zlib -qt-pcre -no-zstd -no-feature-brotli -no-feature-libproxy
+        -no-feature-testlib -qt-zlib -qt-pcre -no-zstd -no-feature-brotli -no-feature-libproxy
         -no-feature-gssapi -no-libudev -no-xcb -no-feature-vulkan -no-eglfs -no-linuxfb
         -no-libinput -no-evdev -no-tslib -no-mtdev -no-xkbcommon -qt-harfbuzz -qt-libpng
         -qt-libjpeg)
+
+# Relay's guide store uses Qt SQL with SQLite, built into Qt rather than taken
+# from the TV, so it doesn't depend on the TV's own SQLite.
+SQL=(-DFEATURE_sql=ON -DFEATURE_sql_sqlite=ON -DFEATURE_system_sqlite=OFF -DFEATURE_sql_mysql=OFF
+     -DFEATURE_sql_psql=OFF -DFEATURE_sql_odbc=OFF -DFEATURE_sql_ibase=OFF -DFEATURE_sql_oci=OFF
+     -DFEATURE_sql_db2=OFF -DFEATURE_sql_mimer=OFF)
+
+# The parts of Qt Declarative Relay doesn't use (it needs QtQuick, Controls
+# Basic, Window, Layouts, Shapes, Effects and Dialogs). Leaving these out
+# shortens the build a good deal.
+DECLARATIVE_TRIM=(-DFEATURE_quick_particles=OFF -DFEATURE_qml_xmllistmodel=OFF
+     -DFEATURE_qml_preview=OFF -DFEATURE_qml_profiler=OFF -DFEATURE_qml_designsupport=OFF
+     -DFEATURE_quick_designer=OFF -DFEATURE_quickshapes_designhelpers=OFF
+     -DFEATURE_quickcontrols2_material=OFF -DFEATURE_quickcontrols2_universal=OFF
+     -DFEATURE_quickcontrols2_fusion=OFF -DFEATURE_quickcontrols2_imagine=OFF
+     -DFEATURE_quickcontrols2_fluentwinui3=OFF -DFEATURE_quickcontrols2_stylekit=OFF
+     -DFEATURE_quickcontrols2_macos=OFF -DFEATURE_quickcontrols2_ios=OFF -DFEATURE_quickcontrols2_windows=OFF)
 
 module() {   # <qt-prefix> <module> [cmake args...]
   local qt=$1 m=$2; shift 2
@@ -70,11 +87,11 @@ module() {   # <qt-prefix> <module> [cmake args...]
 # Tools for this computer (moc, qsb, qmlcachegen and the rest).
 mkdir -p "$WORK/build/host-qtbase"
 ( cd "$WORK/build/host-qtbase"
-  "$SRC/qtbase/configure" -prefix "$HOST" "${COMMON[@]}" -no-opengl -no-openssl -qt-freetype -no-fontconfig
+  "$SRC/qtbase/configure" -prefix "$HOST" "${COMMON[@]}" -no-feature-sql -no-opengl -no-openssl -qt-freetype -no-fontconfig
   cmake --build . --parallel
   cmake --install . )
 module "$HOST" qtshadertools
-module "$HOST" qtdeclarative
+module "$HOST" qtdeclarative "${DECLARATIVE_TRIM[@]}"
 
 # The SDK's toolchain hides packages outside its sysroot.
 cat > "$WORK/webos-qt-toolchain.cmake" <<TOOLCHAIN
@@ -88,10 +105,10 @@ mkdir -p "$WORK/build/target-qtbase"
   "$SRC/qtbase/configure" -prefix "$TARGET" -static "${COMMON[@]}" -opengl es2 -fontconfig -system-freetype \
     -no-feature-wayland -no-feature-qtwaylandscanner -openssl-linked -qt-host-path "$HOST" -- \
     -DCMAKE_TOOLCHAIN_FILE="$WORK/webos-qt-toolchain.cmake" \
-    -DQT_HOST_PATH_CMAKE_DIR="$HOST/lib/cmake" -DOPENSSL_USE_STATIC_LIBS=ON
+    -DQT_HOST_PATH_CMAKE_DIR="$HOST/lib/cmake" -DOPENSSL_USE_STATIC_LIBS=ON "${SQL[@]}"
   cmake --build . --parallel
   cmake --install . )
 module "$TARGET" qtshadertools "${HOSTARGS[@]}"
-module "$TARGET" qtdeclarative "${HOSTARGS[@]}" -DFEATURE_qml_debug=OFF
+module "$TARGET" qtdeclarative "${HOSTARGS[@]}" -DFEATURE_qml_debug=OFF "${DECLARATIVE_TRIM[@]}"
 
 echo "Qt $V for webOS: $TARGET (tools: $HOST)"
