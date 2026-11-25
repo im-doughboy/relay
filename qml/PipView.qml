@@ -97,6 +97,7 @@ Item {
             timeshiftMb: 0
             deinterlace: Settings.deinterlace
             hardwareDecoding: Settings.hardwareDecoding
+            preferredAudio: Settings.audioLanguage
             muted: true
             onPlaybackError: (m) => root.error = m
             onPlaybackStarted: root.error = ""

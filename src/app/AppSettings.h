@@ -33,6 +33,9 @@ class AppSettings : public QObject
     // (crop to fill the window) or "stretch"; deinterlace: "auto", "on", "off".
     Q_PROPERTY(QString pictureShape READ pictureShape WRITE setPictureShape NOTIFY optionsChanged)
     Q_PROPERTY(QString deinterlace READ deinterlace WRITE setDeinterlace NOTIFY optionsChanged)
+    // Preferred languages ("" = what the video says; subtitles also "off").
+    Q_PROPERTY(QString audioLanguage READ audioLanguage WRITE setAudioLanguage NOTIFY optionsChanged)
+    Q_PROPERTY(QString subtitleLanguage READ subtitleLanguage WRITE setSubtitleLanguage NOTIFY optionsChanged)
     Q_PROPERTY(bool hardwareDecoding READ hardwareDecoding WRITE setHardwareDecoding NOTIFY optionsChanged)
     Q_PROPERTY(int audioDelayMs READ audioDelayMs WRITE setAudioDelayMs NOTIFY optionsChanged)
     // Guide and playlist upkeep (global): hours between updates (playlist: 0 =
@@ -111,6 +114,10 @@ public:
     void setPictureShape(QString v);
     QString deinterlace() const;
     void setDeinterlace(QString v);
+    QString audioLanguage() const;
+    void setAudioLanguage(QString v);
+    QString subtitleLanguage() const;
+    void setSubtitleLanguage(QString v);
     bool hardwareDecoding() const;
     void setHardwareDecoding(bool v);
     int audioDelayMs() const;

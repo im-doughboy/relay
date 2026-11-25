@@ -43,6 +43,7 @@ void TsSegmenter::feed(const QByteArray &data)
 void TsSegmenter::finish()
 {
     if (!m_current.isEmpty()) close(qMax(0.5, m_pcrSinceCut));
+    m_ended = true;
 }
 
 void TsSegmenter::discontinuity()
@@ -211,6 +212,7 @@ QByteArray TsSegmenter::playlist(const QString &prefix, int minimum) const
         out += "#EXTINF:" + QByteArray::number(s.duration, 'f', 3) + ",\n";
         out += prefix.toUtf8() + QByteArray::number(s.sequence) + ".ts\n";
     }
+    if (m_ended) out += "#EXT-X-ENDLIST\n";   // a movie that has been sent in full
     return out;
 }
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Relay VERSION 0.5.2 LANGUAGES CXX)
+project(Relay VERSION 0.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +81,7 @@ add_library(relay_core STATIC
     src/app/OtherPlaylists.h       src/app/OtherPlaylists.cpp
     src/app/Backup.h               src/app/Backup.cpp
     src/app/Fonts.h                src/app/Fonts.cpp
+    src/app/Languages.h            src/app/Languages.cpp
     src/epg/Programme.h
     src/epg/XmltvParser.h          src/epg/XmltvParser.cpp
     src/epg/EpgMatcher.h           src/epg/EpgMatcher.cpp
@@ -106,6 +107,20 @@ qt_add_resources(relay_core "relay_web" PREFIX "/web" FILES src/web/remote.html)
 qt_add_resources(relay_core "relay_fonts" PREFIX "/fonts" BASE packaging/fonts/Inter FILES
     packaging/fonts/Inter/Inter-Regular.ttf packaging/fonts/Inter/Inter-Medium.ttf
     packaging/fonts/Inter/Inter-SemiBold.ttf packaging/fonts/Inter/Inter-Bold.ttf)
+
+# Casting a movie with a chosen sound track repackages it with FFmpeg's
+# libraries (cast/Remuxer); libmpv already depends on them, so they ship anyway.
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBAV QUIET IMPORTED_TARGET libavformat libavcodec libavutil)
+endif()
+if(LIBAV_FOUND)
+    target_sources(relay_core PRIVATE src/cast/Remuxer.h src/cast/Remuxer.cpp)
+    target_link_libraries(relay_core PUBLIC PkgConfig::LIBAV)
+    target_compile_definitions(relay_core PUBLIC RELAY_HAVE_LIBAV)
+    message(STATUS "Cast sound-track choice: FFmpeg ${LIBAV_libavformat_VERSION}")
+else()
+    message(STATUS "Cast sound-track choice: off (FFmpeg's libavformat not found; pacman -S mingw-w64-ucrt-x86_64-ffmpeg)")
+endif()
 
 # Game controllers (Xbox, PlayStation, Switch…) through SDL2; without it Relay
 # builds, but doesn't see controllers.

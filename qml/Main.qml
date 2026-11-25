@@ -246,6 +246,8 @@ Window {
         pictureShape: Settings.pictureShape
         deinterlace: Settings.deinterlace
         hardwareDecoding: Settings.hardwareDecoding
+        preferredAudio: Settings.audioLanguage
+        preferredSubtitles: Settings.subtitleLanguage
         audioDelayMs: Settings.audioDelayMs
         defaultUserAgent: Settings.userAgent
         onPlaybackError: (message) => {
@@ -296,10 +298,29 @@ Window {
     }
 
     // ---- Casting -------------------------------------------------------------
+    // The sound track picked in a movie, so the TV gets the same one (and the
+    // next episode too): its place in the list and its labels.
+    property var castAudio: ({})
+    function addCastAudio(source) {
+        if (!Player.vodActive) return source
+        if (video.vod) {
+            const tracks = video.tracks("audio")
+            const i = tracks.findIndex(t => t.selected)
+            if (i >= 0) win.castAudio = { index: i, lang: tracks[i].lang, title: tracks[i].title }
+        }
+        if (win.castAudio.index !== undefined) {
+            source.audioIndex = win.castAudio.index
+            source.audioLang = win.castAudio.lang
+            source.audioTitle = win.castAudio.title
+        }
+        source.audioPreferred = Settings.audioLanguage
+        return source
+    }
     function castTo(deviceId) {
         const source = Player.castSource()
         if (!source.url) { toast.show(qsTr("Nothing is playing"), true); return }
         if (Player.vodActive) { source.start = win.vodOnTv ? Cast.position : video.position; win.vodOnTv = true }
+        addCastAudio(source)
         Cast.start(deviceId, source)
         // One connection to the provider: the TV's, through Relay (a paused
         // copy here would hold a second one, and the provider drops it).
@@ -401,6 +422,7 @@ Window {
                 win.vodOnTv = true
                 const source = Player.castSource()
                 source.start = start
+                addCastAudio(source)
                 Cast.start(Cast.deviceId, source)
                 return
             }

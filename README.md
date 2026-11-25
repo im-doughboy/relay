@@ -316,6 +316,9 @@ for a panel down the right: ↑ ↓ pick a row, ← → change it (or click the 
   **Z** switches it straight away. Remembered.
 - **Audio track:** for channels with a second language or audio description. **A** switches
   it on live TV too; the next channels start in the same language when they have it.
+- **Sound and subtitle languages** (Settings → Playback & recording): the language movies,
+  series and channels start in when they have it, and whether movies and series show subtitles
+  (Off, or in a chosen language). Picking another track while watching still wins.
 - **Lip-sync:** moves the sound 50 ms at a time, up to 2 seconds either way (useful with
   Bluetooth speakers or a receiver). Remembered.
 - **Subtitles / captions** (also **C**).
@@ -492,8 +495,13 @@ the TV can't reach Relay and devices aren't found. The TV and this computer must
 network.
 
 Limits: casting uses the provider's own stream, so channels with H.265 or MPEG-2 video only play
-on devices that support them (most TVs do; older Chromecasts don't). Subtitles and audio track
-choices aren't sent to the TV.
+on devices that support them (most TVs do; older Chromecasts don't). Subtitles aren't sent to
+the TV.
+
+**Sound track:** TVs and Chromecasts play a file's first sound track. When a movie or episode
+has several and you picked another (or one in your Settings language), Relay sends the picture
+and that track only, repackaged as it goes without re-encoding. Jumping ahead or back then
+restarts the stream from there, which takes a moment.
 
 ## Remotes, game controllers and your phone
 

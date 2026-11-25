@@ -413,6 +413,7 @@ FocusScope {
                     timeshiftMb: tile.isVod ? 64 : 0     // no pause buffer for channels
                     deinterlace: Settings.deinterlace
                     hardwareDecoding: Settings.hardwareDecoding
+                    preferredAudio: Settings.audioLanguage
                     muted: !tile.isSelected || root.mainVideo.muted
                     volume: root.mainVideo.volume
                     onPlaybackError: (m) => tile.error = m

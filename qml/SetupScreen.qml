@@ -56,6 +56,12 @@ FocusScope {
         const t = (h ? h + " h" : "") + (h && min ? " " : "") + (min ? min + " min" : "")
         return m > 0 ? qsTr("%1 later").arg(t) : qsTr("%1 earlier").arg(t)
     }
+    // Each language in its own name, so it's easy to find.
+    readonly property var languageChoices: [
+        { label: "English", value: "en" }, { label: "Español", value: "es" }, { label: "Français", value: "fr" },
+        { label: "Deutsch", value: "de" }, { label: "Italiano", value: "it" }, { label: "Português", value: "pt" },
+        { label: "Nederlands", value: "nl" }, { label: "Polski", value: "pl" }, { label: "Türkçe", value: "tr" },
+        { label: "Русский", value: "ru" }, { label: "العربية", value: "ar" }, { label: "हिन्दी", value: "hi" } ]
     signal closeRequested()
     signal pinRequested(string mode, string reason, var onOk)
 
@@ -793,6 +799,22 @@ FocusScope {
                         }
                     }
                 }
+            }
+
+            // Languages
+            ChoiceRow {
+                visible: Session.ready
+                caption: qsTr("Sound language: movies, series and channels start in it when they have it. You can still switch while watching.")
+                choices: [ { label: qsTr("As the video says"), value: "" } ].concat(root.languageChoices)
+                value: Settings.audioLanguage
+                onChosen: (v) => Settings.audioLanguage = v
+            }
+            ChoiceRow {
+                visible: Session.ready
+                caption: qsTr("Subtitles in movies and series")
+                choices: [ { label: qsTr("As the video says"), value: "" }, { label: qsTr("Off"), value: "off" } ].concat(root.languageChoices)
+                value: Settings.subtitleLanguage
+                onChosen: (v) => Settings.subtitleLanguage = v
             }
 
             // Picture

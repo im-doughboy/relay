@@ -16,6 +16,7 @@ class QNetworkReply;
 class QTcpServer;
 class QTcpSocket;
 class TsSegmenter;
+class Remuxer;
 
 // A small web server on this computer that a TV or Chromecast plays from.
 // The TV asks Relay; Relay fetches from the provider (with the channel's user
@@ -43,7 +44,14 @@ public:
         QString dlnaFeatures;      // contentFeatures.dlna.org (DLNA TVs ask)
         bool joinHls = false;      // an HLS channel sent on as one MPEG-TS stream (TVs without HLS)
         bool shareLive = false;    // a live MPEG-TS channel: one provider connection, shared by the TV's requests
+        // A movie repackaged with one chosen sound track (Remuxer): as HLS when
+        // asHls, otherwise as one MPEG-TS stream. Starts `remuxStart` seconds in.
+        bool remux = false;
+        int remuxAudio = -1;
+        double remuxStart = 0;
     };
+    // FFmpeg's libraries are there (the sound-track choice works).
+    static bool canRemux();
     // The path (on this server) the receiver should play; starts the server.
     QString add(const Source &source);
     void remove(const QString &path);
@@ -70,6 +78,12 @@ private:
         int feedFailures = 0;
         QList<QPointer<QTcpSocket>> listeners;   // shared live: the TV's open requests
         int logged = 0;                          // requests written to the log
+        // Remux: what's been made, how far the receiver has asked, whether it's done.
+        std::shared_ptr<Remuxer> remuxer;
+        QByteArray head;                         // the start, for a TV that asks again
+        qint64 produced = 0;
+        int lastAsked = -1;                      // newest HLS segment the receiver asked for
+        bool remuxEnded = false;
     };
     struct Waiting { QPointer<QTcpSocket> socket; QString token; qint64 since; };
 
@@ -85,6 +99,11 @@ private:
     void serveJoined(QTcpSocket *socket, const Source &source, const QByteArray &method,
                      const QHash<QByteArray, QByteArray> &headers);
     void answerWaiting();
+    void startRemux(const QString &token);
+    void onRemuxData(const QString &token, const QByteArray &ts);
+    void serveRemux(QTcpSocket *socket, const QString &token, const QByteArray &method,
+                    const QHash<QByteArray, QByteArray> &headers);
+    void updateHold(Entry &e);
     void reply(QTcpSocket *socket, int status, const QByteArray &type, const QByteArray &body,
                const QByteArray &method = "GET", const QString &features = QString());
 

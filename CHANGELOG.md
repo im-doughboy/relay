@@ -3,6 +3,17 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.5.3
+
+- **Sound and subtitle languages:** Settings → Playback & recording has a sound language
+  (English, Español, Français and more) that movies, series and channels start in when they
+  have it, and a subtitle choice for movies and series (Off, or a language). Picking another
+  track while watching still wins.
+- **Casting keeps your sound track:** a movie or episode cast to a TV or Chromecast plays in the
+  language you picked (or your Settings language) instead of the file's first track. The next
+  episode goes to the TV in the same language.
+- Relay now uses the Inter font on every computer, so it looks the same everywhere.
+
 ## 0.5.2
 
 - **Browse while casting:** open Movies & series, the guide or anything else and a small

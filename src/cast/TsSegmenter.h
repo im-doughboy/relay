@@ -23,7 +23,8 @@ public:
     explicit TsSegmenter(double targetSecs = 4.0, int keep = 8);
 
     void feed(const QByteArray &data);
-    void finish();   // the stream ended: close the last segment
+    void finish();   // the stream ended: close the last segment; the playlist says it's complete
+    bool ended() const { return m_ended; }
     void discontinuity();   // a new connection: what follows doesn't continue what came before
 
     struct Segment { int sequence; double duration; QByteArray data; bool discontinuity = false; };
@@ -58,6 +59,7 @@ private:
     bool m_waitForKey = true;       // the first segment (and after a break) starts on a key frame
     double m_waitedPcr = 0;         // how long it's been waiting for one
     bool m_nextIsBreak = false;
+    bool m_ended = false;
     int m_discontinuitySequence = 0;
     int m_nextSequence = 0;
     QList<Segment> m_segments;

@@ -56,6 +56,10 @@ class MpvItem : public QQuickFramebufferObject
     Q_PROPERTY(bool hardwareDecoding READ hardwareDecoding WRITE setHardwareDecoding NOTIFY pictureChanged)
     Q_PROPERTY(int audioDelayMs READ audioDelayMs WRITE setAudioDelayMs NOTIFY pictureChanged)
     Q_PROPERTY(double speed READ speed WRITE setSpeed NOTIFY speedChanged)
+    // Settings: the languages to start in ("" = what the video says; a code
+    // like "en"; subtitles also "off"). A choice made while watching wins.
+    Q_PROPERTY(QString preferredAudio READ preferredAudio WRITE setPreferredAudio NOTIFY pictureChanged)
+    Q_PROPERTY(QString preferredSubtitles READ preferredSubtitles WRITE setPreferredSubtitles NOTIFY pictureChanged)
     // Sent to the provider for streams that don't name their own (the
     // playlist's setting; empty = Relay's).
     Q_PROPERTY(QString defaultUserAgent MEMBER m_defaultUserAgent)
@@ -117,6 +121,10 @@ public:
     void setAudioDelayMs(int ms);
     double speed() const { return m_speed; }
     void setSpeed(double speed);
+    QString preferredAudio() const { return m_prefAudio; }
+    void setPreferredAudio(const QString &code);
+    QString preferredSubtitles() const { return m_prefSubs; }
+    void setPreferredSubtitles(const QString &code);
 
     std::shared_ptr<MpvCore> core() const { return m_core; }
 
@@ -193,7 +201,12 @@ private:
     // Live TV: captions start off; once turned on (C) they stay on across channels.
     bool m_wantCaptions = false;
     bool m_vodSubChosen = false;     // the subtitle choice was made in this movie
+    bool m_vodAudioChosen = false;   // the sound track was picked in this movie
+    bool m_liveAudioChosen = false;  // a live channel's sound language was picked this session
+    QString m_prefAudio, m_prefSubs;
     void applyCaptionChoice();
+    void applyLanguagePrefs();
+    int findTrack(const QString &type, const QString &code) const;   // -1: none in that language
     void logSubtitleTracks();
     double m_startPos = 0;            // where load() starts a movie
     double m_position = 0;

@@ -1,5 +1,7 @@
 #include "MpvItem.h"
 
+#include "app/Languages.h"
+
 #include "sources/PortalClient.h"
 
 #include <QSet>
@@ -259,6 +261,10 @@ MpvItem::MpvItem(QQuickItem *parent)
     else if (m_shape == QLatin1String("stretch")) mpv_set_property_string(mpv, "keepaspect", "no");
     else if (m_shape == QLatin1String("16:9") || m_shape == QLatin1String("4:3"))
         mpv_set_property_string(mpv, "video-aspect-override", m_shape.toUtf8().constData());
+    // Languages set before mpv started.
+    if (!m_prefAudio.isEmpty()) mpv_set_property_string(mpv, "alang", Languages::mpvList(m_prefAudio).toUtf8().constData());
+    if (!m_prefSubs.isEmpty() && m_prefSubs != QLatin1String("off"))
+        mpv_set_property_string(mpv, "slang", Languages::mpvList(m_prefSubs).toUtf8().constData());
     // RELAY_MPV_LOG=v (or debug) for troubleshooting playback.
     const QByteArray logLevel = qEnvironmentVariableIsSet("RELAY_MPV_LOG")
         ? qgetenv("RELAY_MPV_LOG") : QByteArray("error");
@@ -334,6 +340,7 @@ void MpvItem::playVod(const QString &url, double startSeconds)
     m_referrer.clear();
     m_startPos = qMax(0.0, startSeconds);
     m_vodSubChosen = false;
+    m_vodAudioChosen = false;
     if (!qFuzzyCompare(m_speed, 1.0)) { m_speed = 1; emit speedChanged(); }
     setVod(true);
     resetPosition();
@@ -401,6 +408,73 @@ void MpvItem::applyCaptionChoice()
     mpv_set_property_string(m_core->mpv, "sid", value.constData());
 }
 
+int MpvItem::findTrack(const QString &type, const QString &code) const
+{
+    mpv_handle *mpv = m_core->mpv;
+    if (!mpv || code.isEmpty()) return -1;
+    auto get = [mpv](const QByteArray &name) {
+        char *v = mpv_get_property_string(mpv, name.constData());
+        const QString s = v ? QString::fromUtf8(v) : QString();
+        mpv_free(v);
+        return s;
+    };
+    const int count = get("track-list/count").toInt();
+    for (int i = 0; i < count; ++i) {
+        const QByteArray p = "track-list/" + QByteArray::number(i) + '/';
+        if (get(p + "type") != type) continue;
+        if (type == QLatin1String("sub") && get(p + "codec").startsWith(QLatin1String("eia_"))) continue;   // captions in the picture
+        if (Languages::matches(code, get(p + "lang"), get(p + "title"))) return get(p + "id").toInt();
+    }
+    return -1;
+}
+
+// Settings' languages, once a video has started: mpv already prefers them
+// through alang/slang, but providers often label tracks only by title, so
+// look by name too. A track picked while watching is left alone.
+void MpvItem::applyLanguagePrefs()
+{
+    mpv_handle *mpv = m_core->mpv;
+    if (!mpv) return;
+    const bool audioPicked = m_vod ? m_vodAudioChosen : m_liveAudioChosen;
+    if (!m_prefAudio.isEmpty() && !audioPicked) {
+        const int id = findTrack(QStringLiteral("audio"), m_prefAudio);
+        char *cur = mpv_get_property_string(mpv, "aid");
+        const int current = cur ? QByteArray(cur).toInt() : -1;
+        mpv_free(cur);
+        if (id >= 0 && id != current) {
+            qInfo().noquote() << "Playback: sound in the preferred language," << m_prefAudio;
+            mpv_set_property_string(mpv, "aid", QByteArray::number(id).constData());
+        }
+    }
+    if (m_vod && !m_vodSubChosen && !m_prefSubs.isEmpty()) {
+        if (m_prefSubs == QLatin1String("off")) {
+            mpv_set_property_string(mpv, "sid", "no");
+        } else {
+            const int id = findTrack(QStringLiteral("sub"), m_prefSubs);
+            if (id >= 0) mpv_set_property_string(mpv, "sid", QByteArray::number(id).constData());
+        }
+    }
+}
+
+void MpvItem::setPreferredAudio(const QString &code)
+{
+    if (code == m_prefAudio) return;
+    m_prefAudio = code;
+    // mpv's own first pick, so the sound doesn't switch a moment after starting.
+    if (m_core->mpv && !m_liveAudioChosen)
+        mpv_set_property_string(m_core->mpv, "alang", Languages::mpvList(code).toUtf8().constData());
+    emit pictureChanged();
+}
+
+void MpvItem::setPreferredSubtitles(const QString &code)
+{
+    if (code == m_prefSubs) return;
+    m_prefSubs = code;
+    if (m_core->mpv)
+        mpv_set_property_string(m_core->mpv, "slang", code == QLatin1String("off") ? "" : Languages::mpvList(code).toUtf8().constData());
+    emit pictureChanged();
+}
+
 void MpvItem::logSubtitleTracks()
 {
     mpv_handle *mpv = m_core->mpv;
@@ -463,6 +537,8 @@ QVariantList MpvItem::tracks(const QString &type) const
         out.append(QVariantMap{
             {QStringLiteral("id"), get(p + "id").toInt()},
             {QStringLiteral("label"), label},
+            {QStringLiteral("lang"), lang},
+            {QStringLiteral("title"), title},
             {QStringLiteral("selected"), get(p + "selected") == QLatin1String("yes")},
         });
     }
@@ -476,6 +552,10 @@ void MpvItem::setTrack(const QString &type, int id)
     if (type == QLatin1String("sub")) {
         if (m_vod) m_vodSubChosen = true;
         else m_wantCaptions = id >= 0;
+    }
+    if (type == QLatin1String("audio")) {
+        if (m_vod) m_vodAudioChosen = true;
+        else m_liveAudioChosen = true;
     }
     const QByteArray value = id < 0 ? QByteArray("no") : QByteArray::number(id);
     mpv_set_property_string(m_core->mpv, prop.constData(), value.constData());
@@ -1050,6 +1130,7 @@ void MpvItem::processEvents()
                 setReconnecting(false);
                 logSubtitleTracks();
                 applyCaptionChoice();
+                applyLanguagePrefs();
                 m_playingFor.start();
                 m_stableTimer.start(kStableMs);
                 setPlaying(true);

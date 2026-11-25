@@ -2,6 +2,9 @@
 #include "HlsJoiner.h"
 
 #include "TsSegmenter.h"
+#ifdef RELAY_HAVE_LIBAV
+#include "Remuxer.h"
+#endif
 
 #include <QDateTime>
 #include <QNetworkAccessManager>
@@ -19,6 +22,11 @@ constexpr quint16 kFirstPort = 8790;
 constexpr qint64 kSocketHighWater = 4 * 1024 * 1024;
 constexpr qint64 kWaitForSegmentsMs = 25000;
 constexpr qint64 kListenerHighWater = 24 * 1024 * 1024;   // a TV this far behind has stopped reading
+// Remux: how far ahead of the receiver to make (HLS segments of ~4 s), what
+// to keep from the start for a TV that asks again, and when a TV has enough.
+constexpr int kRemuxSegmentsAhead = 6;
+constexpr qint64 kRemuxHead = 16 * 1024 * 1024;
+constexpr qint64 kRemuxBacklog = 4 * 1024 * 1024;
 constexpr int kRequestsLogged = 6;                       // per stream; problems are always logged
 
 QString newToken()
@@ -98,8 +106,14 @@ QString CastRelay::add(const Source &source)
     const QString token = newToken();
     Entry e;
     e.source = source;
-    if (source.asHls || source.shareLive) e.segmenter = std::make_shared<TsSegmenter>();
+    // A movie keeps more segments: the receiver may pause, and Relay waits for it.
+    if (source.remux) e.segmenter = std::make_shared<TsSegmenter>(4.0, 40);
+    else if (source.asHls || source.shareLive) e.segmenter = std::make_shared<TsSegmenter>();
     m_entries.insert(token, e);
+    if (source.remux) {
+        startRemux(token);
+        return source.asHls ? QStringLiteral("/h/%1/live.m3u8").arg(token) : QStringLiteral("/s/%1/stream.ts").arg(token);
+    }
     if (source.asHls) {
         startFeed(token);
         return QStringLiteral("/h/%1/live.m3u8").arg(token);
@@ -272,7 +286,9 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
             m_waitTimer.start();
             return;
         }
-        const QByteArray seg = e.segmenter->segment(parts[2].section(QLatin1Char('.'), 0, 0).toInt());
+        const int sequence = parts[2].section(QLatin1Char('.'), 0, 0).toInt();
+        if (e.source.remux && sequence > e.lastAsked) { e.lastAsked = sequence; updateHold(e); }
+        const QByteArray seg = e.segmenter->segment(sequence);
         if (seg.isEmpty()) {
             qWarning().noquote() << "Cast: the receiver asked for segment" << parts[2] << "which is gone (it fell behind)";
             reply(socket, 404, "text/plain", "gone", method);
@@ -281,7 +297,8 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
         return;
     }
     if (parts[0] == QLatin1String("s")) {                       // the stream itself
-        if (e.source.joinHls) serveJoined(socket, e.source, method, headers);
+        if (e.source.remux) serveRemux(socket, token, method, headers);
+        else if (e.source.joinHls) serveJoined(socket, e.source, method, headers);
         else if (e.source.shareLive) serveShared(socket, token, method, headers);
         else pipe(socket, token, e.source.url, method, headers);
         return;
@@ -488,6 +505,115 @@ void CastRelay::startFeed(const QString &token)
                                     .arg(lasted);
         QTimer::singleShot(500 * e->feedFailures, this, [this, token] { startFeed(token); });
     });
+}
+
+// ---- a movie with a chosen sound track (Remuxer) -----------------------------------------------
+
+bool CastRelay::canRemux()
+{
+#ifdef RELAY_HAVE_LIBAV
+    return true;
+#else
+    return false;
+#endif
+}
+
+void CastRelay::startRemux(const QString &token)
+{
+#ifdef RELAY_HAVE_LIBAV
+    auto it = m_entries.find(token);
+    if (it == m_entries.end()) return;
+    Remuxer::Options o;
+    o.url = it->source.url;
+    o.userAgent = it->source.userAgent;
+    o.referrer = it->source.referrer;
+    o.start = it->source.remuxStart;
+    o.audio = it->source.remuxAudio;
+    auto remuxer = std::make_shared<Remuxer>(o);
+    it->remuxer = remuxer;
+    qInfo().noquote() << QStringLiteral("Cast: sending the movie with sound track %1 only, from %2 s")
+                             .arg(o.audio + 1).arg(qRound(o.start));
+    Remuxer *r = remuxer.get();
+    connect(r, &Remuxer::data, this, [this, token, r](const QByteArray &ts) { onRemuxData(token, ts); r->taken(); });
+    connect(remuxer.get(), &Remuxer::ended, this, [this, token](const QString &error) {
+        auto e = m_entries.find(token);
+        if (e == m_entries.end()) return;
+        e->remuxEnded = true;
+        e->segmenter->finish();
+        if (error.isEmpty()) qInfo().noquote() << "Cast: the whole movie has been sent";
+        else qWarning().noquote() << "Cast: repackaging the movie stopped:" << error;
+        // The TV gets the rest of what's queued, then the end of the stream.
+        for (const QPointer<QTcpSocket> &l : std::as_const(e->listeners))
+            if (l) l->disconnectFromHost();
+        e->listeners.clear();
+        if (!m_waiting.isEmpty()) answerWaiting();
+    });
+    remuxer->start();
+#else
+    Q_UNUSED(token);
+#endif
+}
+
+void CastRelay::onRemuxData(const QString &token, const QByteArray &ts)
+{
+    auto e = m_entries.find(token);
+    if (e == m_entries.end()) return;
+    e->segmenter->feed(ts);
+    if (e->produced < kRemuxHead) e->head += ts;
+    e->produced += ts.size();
+    for (int i = int(e->listeners.size()) - 1; i >= 0; --i) {
+        QTcpSocket *l = e->listeners.at(i);
+        if (!l || l->state() != QAbstractSocket::ConnectedState) { e->listeners.removeAt(i); continue; }
+        l->write(ts);
+    }
+    updateHold(*e);
+    if (!m_waiting.isEmpty()) answerWaiting();
+}
+
+// Make only as far ahead as the receiver needs: a few segments past the one
+// it last asked for, or until the TV's connection has a backlog.
+void CastRelay::updateHold(Entry &e)
+{
+#ifdef RELAY_HAVE_LIBAV
+    if (!e.remuxer) return;
+    bool hold = false;
+    if (e.source.asHls) {
+        const auto &segs = e.segmenter->segments();
+        const int newest = segs.isEmpty() ? -1 : segs.last().sequence;
+        hold = newest - qMax(0, e.lastAsked) >= kRemuxSegmentsAhead;
+    } else if (e.listeners.isEmpty()) {
+        hold = e.produced >= kRemuxHead;   // waiting for the TV to ask
+    } else {
+        for (const QPointer<QTcpSocket> &l : std::as_const(e.listeners))
+            if (l && l->bytesToWrite() > kRemuxBacklog) hold = true;
+    }
+    if (hold != e.remuxer->holding()) e.remuxer->hold(hold);
+#else
+    Q_UNUSED(e);
+#endif
+}
+
+void CastRelay::serveRemux(QTcpSocket *socket, const QString &token, const QByteArray &method,
+                           const QHash<QByteArray, QByteArray> &headers)
+{
+    Entry &e = m_entries[token];
+    // Made as it goes: no length and no ranges, like a live channel.
+    QByteArray h = "HTTP/1.1 200 OK\r\n";
+    h += commonHeaders(headers, e.source.dlnaFeatures);
+    h += "Content-Type: " + (e.source.contentType.isEmpty() ? QByteArray("video/mp2t") : e.source.contentType.toUtf8()) + "\r\n";
+    h += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    socket->write(h);
+    if (method == "HEAD") { socket->disconnectFromHost(); return; }
+    // From the start while it's still all here (TVs often ask twice), else
+    // from the newest key frame.
+    socket->write(e.produced <= e.head.size() ? e.head : e.segmenter->joinData());
+    if (e.remuxEnded) { socket->disconnectFromHost(); return; }
+    e.listeners.append(QPointer<QTcpSocket>(socket));
+    connect(socket, &QTcpSocket::bytesWritten, this, [this, token] {
+        auto it = m_entries.find(token);
+        if (it != m_entries.end()) updateHold(*it);
+    });
+    updateHold(e);
 }
 
 void CastRelay::answerWaiting()

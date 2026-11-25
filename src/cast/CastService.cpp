@@ -1,6 +1,12 @@
 #include "CastService.h"
 
 #include "sources/PortalClient.h"
+#ifdef RELAY_HAVE_LIBAV
+#include "Remuxer.h"
+#endif
+
+#include <QFutureWatcher>
+#include <QtConcurrent>
 
 #include <QtDebug>
 
@@ -106,8 +112,55 @@ void CastService::begin(const QString &url, const QVariantMap &source)
     m_castUrl = url;
     m_castSource = source;
     m_triedHls = false;
+    m_remux = false;
     const bool chromecast = m_device.kind == QLatin1String("chromecast");
-    const QString mime = mimeFor(url, m_live);
+
+#ifdef RELAY_HAVE_LIBAV
+    // A movie or episode: TVs play the file's first sound track, so look at
+    // its tracks first; if another was picked (or is in Settings' language),
+    // send that one only.
+    const bool wantsTrack = source.value(QStringLiteral("audioIndex"), -1).toInt() >= 0
+                         || !source.value(QStringLiteral("audioLang")).toString().isEmpty()
+                         || !source.value(QStringLiteral("audioTitle")).toString().isEmpty()
+                         || !source.value(QStringLiteral("audioPreferred")).toString().isEmpty();
+    if (!m_live && wantsTrack && !source.contains(QStringLiteral("_remuxAudio"))) {
+        const quint64 gen = m_generation;
+        const QString ua = source.value(QStringLiteral("userAgent")).toString();
+        const QString ref = source.value(QStringLiteral("referrer")).toString();
+        auto *watcher = new QFutureWatcher<Remuxer::Probe>(this);
+        connect(watcher, &QFutureWatcher<Remuxer::Probe>::finished, this, [this, watcher, gen, url, source] {
+            watcher->deleteLater();
+            if (gen != m_generation) return;   // stopped or moved on meanwhile
+            const Remuxer::Probe p = watcher->result();
+            QVariantMap s = source;
+            int audio = -1;
+            if (!p.error.isEmpty()) {
+                qWarning().noquote() << "Cast: couldn't look at the video's sound tracks:" << p.error;
+            } else {
+                const int chosen = Remuxer::choose(p.audio, source.value(QStringLiteral("audioIndex"), -1).toInt(),
+                                                   source.value(QStringLiteral("audioLang")).toString(),
+                                                   source.value(QStringLiteral("audioTitle")).toString(),
+                                                   source.value(QStringLiteral("audioPreferred")).toString());
+                if (chosen >= 0 && chosen != Remuxer::receiverDefault(p.audio)) audio = chosen;
+                qInfo().noquote() << QStringLiteral("Cast: the video has %1 sound tracks; %2").arg(p.audio.size())
+                                         .arg(audio >= 0 ? QStringLiteral("sending track %1").arg(audio + 1)
+                                                         : QStringLiteral("the TV's own pick is the right one"));
+            }
+            s.insert(QStringLiteral("_remuxAudio"), audio);
+            s.insert(QStringLiteral("_duration"), p.duration);
+            begin(url, s);
+        });
+        watcher->setFuture(QtConcurrent::run([url, ua, ref] { return Remuxer::probe(url, ua, ref); }));
+        return;
+    }
+#endif
+    if (source.value(QStringLiteral("_remuxAudio"), -1).toInt() >= 0) {
+        m_remux = true;
+        m_remuxFrom = source.value(QStringLiteral("start")).toDouble();
+        m_remuxDuration = source.value(QStringLiteral("_duration")).toDouble();
+        setProgress(m_remuxFrom, m_remuxDuration);
+    }
+    const QString mime = m_remux ? QStringLiteral("video/mp2t") : mimeFor(url, m_live);
     if (chromecast) { serve(url, source, mime); return; }
 
     if (!m_dlna) {
@@ -120,9 +173,17 @@ void CastService::begin(const QString &url, const QVariantMap &source)
             if (!m_triedHls && liveTs && tvTakesHls && m_state == QLatin1String("connecting")) { retryAsHls(); return; }
             finish(problem);
         });
-        connect(m_dlna, &DlnaRenderer::stopped, this, [this] { finish(QString()); });
+        connect(m_dlna, &DlnaRenderer::stopped, this, [this] {
+            // A repackaged movie has no length the TV knows: judge the end here.
+            if (m_remux && m_remuxDuration > 0 && m_position >= m_remuxDuration - 90) {
+                qInfo().noquote() << "Cast: played to the end";
+                emit finished();
+                return;
+            }
+            finish(QString());
+        });
         connect(m_dlna, &DlnaRenderer::finished, this, [this] { qInfo().noquote() << "Cast: played to the end"; emit finished(); });
-        connect(m_dlna, &DlnaRenderer::progress, this, &CastService::setProgress);
+        connect(m_dlna, &DlnaRenderer::progress, this, &CastService::deviceProgress);
     }
     // The name this TV uses for the type (Samsung is particular about it).
     const quint64 generation = m_generation;
@@ -170,7 +231,17 @@ void CastService::serve(const QString &url, const QVariantMap &source, const QSt
     rs.shareLive = !chromecast && m_live && !hlsSource && !joinHls && !makeHls;
     if (!chromecast) {
         rs.forceType = !hlsSource;   // the same type the TV was told
-        rs.dlnaFeatures = DlnaRenderer::features(m_live);
+        rs.dlnaFeatures = DlnaRenderer::features(m_live || m_remux);   // made as it goes: no seeking by bytes
+    }
+    if (m_remux) {
+        m_remuxType = mime;
+        rs.remux = true;
+        rs.remuxAudio = source.value(QStringLiteral("_remuxAudio")).toInt();
+        rs.remuxStart = source.value(QStringLiteral("start")).toDouble();
+        rs.asHls = chromecast;   // Chromecast plays HLS; a TV one MPEG-TS stream
+        rs.shareLive = false;
+        rs.joinHls = false;
+        rs.contentType = chromecast ? QStringLiteral("video/mp2t") : mime;
     }
     m_path = m_relay->add(rs);
     if (m_path.isEmpty()) { finish(tr("Couldn't start sharing the stream on this computer")); return; }
@@ -195,14 +266,14 @@ void CastService::serve(const QString &url, const QVariantMap &source, const QSt
             });
             connect(m_cc, &ChromecastClient::stopped, this, [this] { finish(QString()); });
             connect(m_cc, &ChromecastClient::finished, this, [this] { qInfo().noquote() << "Cast: played to the end"; emit finished(); });
-            connect(m_cc, &ChromecastClient::progress, this, &CastService::setProgress);
+            connect(m_cc, &ChromecastClient::progress, this, &CastService::deviceProgress);
         }
         const QString type = rs.asHls || hlsSource ? QStringLiteral("application/x-mpegurl")
                            : mime == QLatin1String("video/x-matroska") ? QStringLiteral("video/mp4")   // what it plays them as
                            : mime;
-        m_cc->load(castUrl, m_title, type, m_live, m_live ? 0 : start);
+        m_cc->load(castUrl, m_title, type, m_live, m_live || m_remux ? 0 : start);
     } else {
-        if (!m_live) m_dlna->seekWhenPlaying(start);
+        if (!m_live && !m_remux) m_dlna->seekWhenPlaying(start);
         m_dlna->load(castUrl, m_title, mime, m_live);
     }
 }
@@ -228,10 +299,36 @@ void CastService::setProgress(double position, double duration)
     emit progressChanged();
 }
 
+void CastService::deviceProgress(double position, double duration)
+{
+    // A repackaged movie starts where it was sent from, and is as long as the video.
+    if (m_remux) setProgress(m_remuxFrom + position, m_remuxDuration > 0 ? m_remuxDuration : 0);
+    else setProgress(position, duration);
+}
+
+// A repackaged movie can't be jumped in by the TV (it only has what was
+// sent): send it again from there.
+void CastService::restartRemux(double seconds)
+{
+    QVariantMap s = m_castSource;
+    s.insert(QStringLiteral("start"), seconds);
+    m_castSource = s;
+    m_remuxFrom = seconds;
+    if (!m_path.isEmpty()) m_relay->remove(m_path);
+    m_path.clear();
+    setState(QStringLiteral("connecting"));
+    serve(m_castUrl, s, m_remuxType.isEmpty() ? QStringLiteral("video/mp2t") : m_remuxType);
+}
+
 void CastService::seek(double seconds)
 {
     if (!active() || m_live) return;
     seconds = qMax(0.0, m_duration > 0 ? qMin(seconds, m_duration - 5) : seconds);
+    if (m_remux) {
+        restartRemux(seconds);
+        setProgress(seconds, m_duration);
+        return;
+    }
     if (m_cc) m_cc->seek(seconds);
     if (m_dlna) m_dlna->seek(seconds);
     setProgress(seconds, m_duration);   // shown at once; the TV confirms

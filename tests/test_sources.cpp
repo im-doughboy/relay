@@ -28,6 +28,10 @@
 #include "cast/CastRelay.h"
 #include "cast/HlsJoiner.h"
 #include "cast/CastService.h"
+#ifdef RELAY_HAVE_LIBAV
+#include "cast/Remuxer.h"
+#endif
+#include "app/Languages.h"
 #include "cast/TsSegmenter.h"
 #include "vod/VodParser.h"
 #include "epg/EpgService.h"
@@ -51,6 +55,9 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <QProcess>
+#include <QRandomGenerator>
+#include <QStandardPaths>
 
 // Tiny HTTP server for recording tests: /live.ts streams 64 KB chunks every
 // 50 ms and never ends; /hls.m3u8 is a live playlist whose segments are
@@ -1987,6 +1994,134 @@ private slots:
         a->deleteLater();
         b->deleteLater();
     }
+
+    void languages_and_track_choice()
+    {
+        // Tags in either code form, names in titles, nothing from an "undefined" tag.
+        QVERIFY(Languages::matches("en", "eng", ""));
+        QVERIFY(Languages::matches("en", "en-US", ""));
+        QVERIFY(!Languages::matches("en", "tur", "English"));          // the tag decides
+        QVERIFY(Languages::matches("en", "", "English 5.1"));
+        QVERIFY(Languages::matches("en", "und", "English"));
+        QVERIFY(Languages::matches("tr", "", "Türkçe"));
+        QVERIFY(Languages::matches("es", "", "Spanish (Latino)"));
+        QVERIFY(!Languages::matches("en", "", "Englishman"));          // whole words only
+        QCOMPARE(Languages::mpvList("en"), QStringLiteral("en,eng"));
+        QCOMPARE(Languages::mpvList(""), QString());
+#ifdef RELAY_HAVE_LIBAV
+        const QList<Remuxer::Track> audio = { {"tur", "Türkçe", true}, {"eng", "English", false} };
+        QCOMPARE(Remuxer::receiverDefault(audio), 0);
+        QCOMPARE(Remuxer::choose(audio, 1, "eng", "English", ""), 1);          // what was picked
+        QCOMPARE(Remuxer::choose(audio, 0, "eng", "English", ""), 1);          // same labels, another place
+        QCOMPARE(Remuxer::choose(audio, -1, "", "", "en"), 1);                 // Settings' language
+        QCOMPARE(Remuxer::choose(audio, -1, "", "", "fr"), -1);                // not there: the TV's own pick
+        QCOMPARE(Remuxer::choose(audio, 1, "fre", "Français", "tr"), 0);       // another episode: Settings, then place
+#endif
+    }
+
+#ifdef RELAY_HAVE_LIBAV
+    void cast_remux_chosen_audio()
+    {
+        // A movie with Turkish first and English second, cast with English:
+        // the receiver gets the picture and the English track only.
+        const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+        if (ffmpeg.isEmpty() || ffprobe.isEmpty()) QSKIP("ffmpeg and ffprobe are needed to make a test movie");
+        QTemporaryDir dir;
+        const QString movie = dir.filePath("movie.mkv");
+        QProcess make;
+        make.start(ffmpeg, {"-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+                            "-f", "lavfi", "-i", "sine=frequency=440", "-f", "lavfi", "-i", "sine=frequency=880",
+                            "-t", "60", "-map", "0", "-map", "1", "-map", "2",
+                            "-c:v", "mpeg2video", "-g", "25", "-c:a", "aac",
+                            "-metadata:s:a:0", "language=tur", "-metadata:s:a:0", "title=Türkçe",
+                            "-metadata:s:a:1", "language=eng", "-metadata:s:a:1", "title=English",
+                            "-disposition:a:0", "default", "-disposition:a:1", "0", movie});
+        QVERIFY(make.waitForFinished(60000));
+        QCOMPARE(make.exitCode(), 0);
+
+        const Remuxer::Probe p = Remuxer::probe(movie, QString(), QString());
+        QVERIFY2(p.error.isEmpty(), qPrintable(p.error));
+        QCOMPARE(p.audio.size(), 2);
+        QCOMPARE(p.audio[1].lang, QStringLiteral("eng"));
+        QVERIFY(p.duration > 59 && p.duration < 61);
+
+        auto audioOf = [&](const QByteArray &ts) {
+            const QString f = dir.filePath(QStringLiteral("out%1.ts").arg(QRandomGenerator::global()->generate()));
+            QFile out(f);
+            out.open(QIODevice::WriteOnly);
+            out.write(ts);
+            out.close();
+            QProcess pr;
+            pr.start(ffprobe, {"-v", "error", "-show_streams", "-of", "json", f});
+            pr.waitForFinished(30000);
+            QStringList found;   // "video", "audio,eng"
+            for (const QJsonValue &v : QJsonDocument::fromJson(pr.readAllStandardOutput()).object().value("streams").toArray()) {
+                const QJsonObject o = v.toObject();
+                const QString lang = o.value("tags").toObject().value("language").toString();
+                found << o.value("codec_type").toString() + (lang.isEmpty() ? QString() : "," + lang);
+            }
+            return found;
+        };
+
+        CastRelay relay;
+        QNetworkAccessManager net;
+        auto fetch = [&](const QUrl &url) -> QByteArray {
+            QNetworkReply *r = net.get(QNetworkRequest(url));
+            QElapsedTimer t;
+            t.start();
+            while (!r->isFinished() && t.elapsed() < 20000) QTest::qWait(10);
+            const QByteArray body = r->readAll();
+            r->deleteLater();
+            return body;
+        };
+
+        // Chromecast: HLS made from it, to the end of the movie.
+        CastRelay::Source cc;
+        cc.url = movie;
+        cc.remux = true;
+        cc.remuxAudio = 1;
+        cc.asHls = true;
+        const QString hlsPath = relay.add(cc);
+        QVERIFY(hlsPath.endsWith("live.m3u8"));
+        const QUrl list(relay.urlFor(hlsPath, QHostAddress::LocalHost));
+        // It makes only a little ahead of the receiver, which hasn't asked yet.
+        QTest::qWait(1500);
+        QByteArray playlist = fetch(list);
+        QVERIFY(playlist.count("#EXTINF") <= 8);
+        QVERIFY(!playlist.contains("#EXT-X-ENDLIST"));
+        QByteArray movieTs;
+        int next = 0;
+        for (int round = 0; round < 60 && !playlist.contains("#EXT-X-ENDLIST"); ++round) {
+            playlist = fetch(list);
+            for (const QByteArray &line : playlist.split('\n')) {
+                if (line.isEmpty() || line.startsWith('#')) continue;
+                const int seq = line.left(line.indexOf('.')).toInt();
+                if (seq < next) continue;
+                movieTs += fetch(list.resolved(QUrl(QString::fromUtf8(line))));
+                next = seq + 1;
+            }
+            QTest::qWait(50);
+        }
+        QVERIFY(playlist.contains("#EXT-X-ENDLIST"));        // the whole movie, waiting for the receiver
+        const QStringList streams = audioOf(movieTs);
+        QVERIFY2(streams.size() == 2, qPrintable(streams.join(" / ")));
+        QVERIFY(streams.contains("video"));
+        QVERIFY(streams.contains("audio,eng"));
+        relay.remove(hlsPath);
+
+        // A TV: one MPEG-TS stream, from 10 s in.
+        CastRelay::Source tv = cc;
+        tv.asHls = false;
+        tv.remuxStart = 10;
+        tv.contentType = QStringLiteral("video/mp2t");
+        const QString tsPath = relay.add(tv);
+        const QByteArray stream = fetch(QUrl(relay.urlFor(tsPath, QHostAddress::LocalHost)));
+        QVERIFY(stream.size() > 188 * 100);
+        QVERIFY(audioOf(stream).contains("audio,eng"));
+        QVERIFY(stream.size() < movieTs.size() * 0.9);        // it started part way in
+    }
+#endif
 
     void cast_devices()
     {

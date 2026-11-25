@@ -17,6 +17,7 @@
 //                  as "playlist-<id>" / "xtream-password-<id>"),
 //                  m3u / xtreamPassword (only where there's no credential store)
 //   player/timeshiftMb       global
+//   player/audioLanguage, player/subtitleLanguage   "" (as the video says), a code ("en"), subtitles also "off"
 
 namespace { QString s_userAgent; }
 
@@ -404,6 +405,8 @@ void AppSettings::setTimeshiftMb(int mb)
 using OptString = QString;
 RELAY_OPTION(OptString, pictureShape, setPictureShape, "player/pictureShape", QStringLiteral("auto"), toString, v)
 RELAY_OPTION(OptString, deinterlace, setDeinterlace, "player/deinterlace", QStringLiteral("auto"), toString, v)
+RELAY_OPTION(OptString, audioLanguage, setAudioLanguage, "player/audioLanguage", QString(), toString, v.trimmed().toLower())
+RELAY_OPTION(OptString, subtitleLanguage, setSubtitleLanguage, "player/subtitleLanguage", QString(), toString, v.trimmed().toLower())
 RELAY_OPTION(bool, hardwareDecoding, setHardwareDecoding, "player/hardwareDecoding", true, toBool, v)
 RELAY_OPTION(int, audioDelayMs, setAudioDelayMs, "player/audioDelayMs", 0, toInt, qBound(-2000, v, 2000))
 RELAY_OPTION(int, guideRefreshHours, setGuideRefreshHours, "guide/refreshHours", 12, toInt, qBound(1, v, 168))

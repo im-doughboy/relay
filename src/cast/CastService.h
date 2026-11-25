@@ -43,6 +43,9 @@ public:
     Q_INVOKABLE void addDevice(const QString &address);
     Q_INVOKABLE void forgetDevice(const QString &id);
     // source: {url, userAgent, referrer, title, live, start (seconds)} (Player.castSource()).
+    // A movie or episode may also say which sound track to send: audioIndex
+    // (0 = the first), audioLang and audioTitle as the player listed it, and
+    // audioPreferred (Settings' language code) for when nothing was picked.
     Q_INVOKABLE void start(const QString &deviceId, const QVariantMap &source);
     Q_INVOKABLE void togglePause();
     Q_INVOKABLE void stop();
@@ -81,6 +84,13 @@ private:
     bool m_live = false;
     double m_position = 0, m_duration = 0;
     void setProgress(double position, double duration);
+    void deviceProgress(double position, double duration);   // the TV's, counted from the movie's start
+    // A movie sent with a chosen sound track (CastRelay remux): its own start
+    // and length, since the TV only sees what it was sent.
+    bool m_remux = false;
+    double m_remuxFrom = 0, m_remuxDuration = 0;
+    QString m_remuxType;   // what the TV was told it is, the same again after a jump
+    void restartRemux(double seconds);
     QString m_castUrl;
     QVariantMap m_castSource;
     bool m_triedHls = false;
