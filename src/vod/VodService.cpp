@@ -1372,6 +1372,11 @@ QVariantList VodService::shelves(int perRow) const
     return out;
 }
 
+QString VodService::picture(const QString &url, int width)
+{
+    return TmdbClient::imageAtWidth(url, width);
+}
+
 QVariantMap VodService::rowAt(int row) const
 {
     const VodModel::Row *r = m_items->row(row);

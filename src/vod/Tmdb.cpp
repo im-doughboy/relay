@@ -16,6 +16,8 @@
 #include <QSaveFile>
 #include <QtDebug>
 
+#include <limits>
+
 // The YouTube trailer among TMDB's videos: an official trailer first, then
 // any trailer, then a teaser.
 // The title's logo (a transparent PNG of its name, as on the poster): in the
@@ -135,6 +137,48 @@ QString TmdbClient::imageBase()
 {
     const QString env = qEnvironmentVariable("RELAY_TMDB_IMAGE_URL");
     return env.isEmpty() ? QStringLiteral("https://image.tmdb.org/t/p/") : env;
+}
+
+QString TmdbClient::imageAtWidth(const QString &url, int width)
+{
+    if (width <= 0) return url;
+    // https://image.tmdb.org/t/p/<size>/<file>
+    static const QRegularExpression address(
+        QStringLiteral("^(https?://image\\.tmdb\\.org/t/p/)([^/]+)(/[^/?#]+\\.(?:jpe?g|png|webp))$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch m = address.match(url);
+    if (!m.hasMatch()) return url;
+    const QString size = m.captured(2);
+    QString smaller;
+
+    // TMDB's own pages use poster sizes cut to 2:3, "w600_and_h900_bestv2"
+    // and its smaller twins; providers copy the largest.
+    static const QRegularExpression cut(QStringLiteral("^w(\\d+)_and_h(\\d+)_(bestv2|face)$"));
+    const QRegularExpressionMatch c = cut.match(size);
+    if (c.hasMatch()) {
+        static const int twins[][2] = {{220, 330}, {300, 450}, {600, 900}};
+        const int w = c.captured(1).toInt(), h = c.captured(2).toInt();
+        bool known = false;
+        for (const auto &t : twins) known = known || (t[0] == w && t[1] == h);
+        if (!known) return url;
+        for (const auto &t : twins) {
+            if (t[0] < width) continue;
+            if (t[0] < w) smaller = QStringLiteral("w%1_and_h%2_%3").arg(t[0]).arg(t[1]).arg(c.captured(3));
+            break;
+        }
+    } else {
+        // Plain widths ("w780", or "original"): the next that covers `width`.
+        static const QRegularExpression plain(QStringLiteral("^w(\\d+)$"));
+        const QRegularExpressionMatch p = plain.match(size);
+        if (!p.hasMatch() && size != QLatin1String("original")) return url;
+        const int w = p.hasMatch() ? p.captured(1).toInt() : std::numeric_limits<int>::max();
+        for (const int candidate : {185, 342, 500, 780, 1280}) {
+            if (candidate < width) continue;
+            if (candidate < w) smaller = QStringLiteral("w%1").arg(candidate);
+            break;
+        }
+    }
+    return smaller.isEmpty() ? url : m.captured(1) + smaller + m.captured(3);
 }
 
 void TmdbClient::setKey(const QString &key)

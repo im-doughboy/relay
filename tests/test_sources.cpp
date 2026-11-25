@@ -1740,6 +1740,32 @@ private slots:
         QVERIFY(TmdbClient::certification(QJsonObject(), true).isEmpty());
     }
 
+    void tmdb_picture_sizes()
+    {
+        // Providers list posters at 600×900; a card 287 wide gets TMDB's 300×450, a grid's 170 wide its 220×330.
+        const QString base = QStringLiteral("https://image.tmdb.org/t/p/");
+        const QString big = base + QStringLiteral("w600_and_h900_bestv2/aBc123.jpg");
+        QCOMPARE(TmdbClient::imageAtWidth(big, 287), base + QStringLiteral("w300_and_h450_bestv2/aBc123.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(big, 300), base + QStringLiteral("w300_and_h450_bestv2/aBc123.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(big, 170), base + QStringLiteral("w220_and_h330_bestv2/aBc123.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(big, 430), big);    // nothing smaller covers it
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("w600_and_h900_face/a.jpg"), 200), base + QStringLiteral("w220_and_h330_face/a.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("w300_and_h450_bestv2/a.jpg"), 287), base + QStringLiteral("w300_and_h450_bestv2/a.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("w533_and_h300_bestv2/a.jpg"), 200), base + QStringLiteral("w533_and_h300_bestv2/a.jpg"));   // not a pair known here
+        // Plain widths and "original": the next width that covers it.
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("w1280/b.jpg"), 764), base + QStringLiteral("w780/b.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("original/b.png"), 300), base + QStringLiteral("w342/b.png"));
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("w780/b.jpg"), 780), base + QStringLiteral("w780/b.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("w154/s.jpg"), 300), base + QStringLiteral("w154/s.jpg"));     // already smaller
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("original/b.jpg"), 1900), base + QStringLiteral("original/b.jpg"));
+        // Left alone: other hosts, other kinds of file, no width.
+        QCOMPARE(TmdbClient::imageAtWidth(QStringLiteral("https://example.com/t/p/w600_and_h900_bestv2/a.jpg"), 287),
+                 QStringLiteral("https://example.com/t/p/w600_and_h900_bestv2/a.jpg"));
+        QCOMPARE(TmdbClient::imageAtWidth(base + QStringLiteral("original/logo.svg"), 300), base + QStringLiteral("original/logo.svg"));
+        QCOMPARE(TmdbClient::imageAtWidth(big, 0), big);
+        QCOMPARE(TmdbClient::imageAtWidth(QString(), 287), QString());
+    }
+
     void tmdb_titles()
     {
         auto clean = [](const char *t, const char *y = "") { return TmdbClient::clean(QString::fromUtf8(t), QString::fromUtf8(y)); };

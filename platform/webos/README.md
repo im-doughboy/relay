@@ -140,6 +140,11 @@ computer's, so on the TV:
   corners.
 - In Movies & series the selected card widens once the remote rests on it,
   and rows of posters are made a little at a time, before they're in view.
+- Posters come at the size the TV shows them. Providers list TMDB's 600×900
+  ones; TMDB has the same at 300×450 and 220×330, a third of the download and
+  a quarter of the decoding, and decoding (one poster at a time) is what
+  posters wait for on the TV (`TmdbClient::imageAtWidth`). The selected row
+  also fetches the next few posters before their cards exist.
 - Moving through the channel groups switches the channel list once the
   remote stops (0.3 seconds).
 

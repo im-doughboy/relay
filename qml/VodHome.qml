@@ -50,6 +50,13 @@ FocusScope {
         return out
     }
 
+    // A card's poster. On a TV it comes at the size the card shows: TMDB has
+    // the providers' 600×900 posters at 300×450 too, a third of the download
+    // and a quarter of the decoding (on the TV they appeared twice as fast).
+    function cardPicture(item) {
+        const url = item ? item.poster || "" : ""
+        return Settings.tv ? Vod.picture(url, cardW) : url
+    }
     // A row of posters' height (not the selected row), for rows still being made.
     property real shelfH: cardH + 80
     function keyOf(item) { return item ? item.kind + ":" + item.id : "" }
@@ -650,6 +657,29 @@ FocusScope {
             spacing: 10
             bottomPadding: 14
 
+            // On a TV: the next posters along the selected row are fetched
+            // before their cards exist. A card is made one step before it
+            // shows, which is too late for a poster that still has to be
+            // downloaded. Only once the remote has rested on the row, so the
+            // rows passed on the way down fetch nothing extra.
+            property bool ahead: false
+            onKeysChanged: { ahead = false; if (keys && Settings.tv) aheadTimer.restart(); else aheadTimer.stop() }
+            Component.onCompleted: if (keys && Settings.tv) aheadTimer.start()
+            Timer { id: aheadTimer; interval: 500; onTriggered: shelf.ahead = shelf.keys }
+            Item {
+                visible: false
+                Repeater {
+                    model: shelf.ahead ? 8 : 0
+                    Image {
+                        required property int index
+                        asynchronous: true
+                        sourceSize.width: 300    // as the cards ask for it, so they share what's fetched
+                        // (the selected card and the five after it are on screen or made already)
+                        source: root.cardPicture(shelf.items[shelf.at + 6 + index])
+                    }
+                }
+            }
+
             Row {
                 x: root.side
                 spacing: 14
@@ -741,10 +771,12 @@ FocusScope {
                             id: poster
                             anchors.fill: parent
                             visible: !card.isMore
-                            source: card.item ? card.item.poster || "" : ""
+                            source: root.cardPicture(card.item)
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
-                            sourceSize.width: 380   // fixed: a resize doesn't reload every poster
+                            // Fixed: a resize doesn't reload every poster. (A TV's
+                            // comes at 300 wide, and isn't resized again here.)
+                            sourceSize.width: Settings.tv ? 300 : 380
                             opacity: card.wide && backdrop.status === Image.Ready ? 0 : 1
                             Behavior on opacity { NumberAnimation { duration: 250 } }
                         }
@@ -752,11 +784,12 @@ FocusScope {
                         Image {
                             id: backdrop
                             anchors.fill: parent
-                            source: card.wide && card.info && card.info.backdrop ? card.info.backdrop : ""
+                            source: !(card.wide && card.info && card.info.backdrop) ? ""
+                                    : Settings.tv ? Vod.picture(card.info.backdrop, root.wideW) : card.info.backdrop
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
-                            // A TV decodes (and uploads) it at the card's size, not larger.
-                            sourceSize.width: Settings.tv ? root.wideW : 960
+                            // A TV gets it at the card's size (TMDB's 780 wide), not larger.
+                            sourceSize.width: Settings.tv ? 780 : 960
                             opacity: status === Image.Ready && !(root.trailerShowing && root.trailerHost === frame) ? 1 : 0
                             Behavior on opacity { NumberAnimation { duration: 300 } }
                         }

@@ -66,6 +66,13 @@ public:
     static QString apiBase();     // RELAY_TMDB_URL overrides (tests)
     static QString imageBase();   // RELAY_TMDB_IMAGE_URL overrides (tests)
 
+    // A TMDB picture's address at the smallest size TMDB has that still
+    // covers `width` pixels across. Providers list posters at 600×900, four
+    // times what a TV's card shows: the 300×450 one is a third of the
+    // download and a quarter of the decoding. Addresses that aren't TMDB
+    // pictures, or are already that small, come back unchanged.
+    static QString imageAtWidth(const QString &url, int width);
+
 signals:
     void keyRejected();
 

@@ -166,6 +166,10 @@ public:
     // Continue watching, Favorites, Recently added, Top rated, then the
     // provider's categories. id is a category for "See all" (recent/top: all, sorted).
     Q_INVOKABLE QVariantList shelves(int perRow = 24) const;
+    // A poster's or backdrop's address for showing `width` pixels across:
+    // TMDB pictures at the smallest size that covers it (see
+    // TmdbClient::imageAtWidth), other addresses as they are.
+    Q_INVOKABLE static QString picture(const QString &url, int width);
 
     // Descriptor for Player.playVod(). `episodeIndex` picks an episode of
     // a series. fromStart ignores saved progress.

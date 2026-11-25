@@ -1,4 +1,5 @@
 import QtQuick
+import Relay.Core
 
 // A movie or series poster (2:3) with a lettered fallback, progress bar,
 // watched tick and favorite star.
@@ -50,7 +51,9 @@ Item {
             id: img
             anchors.fill: parent
             anchors.margins: root.selected ? 3 : 0
-            source: root.source
+            // On a TV, at the size shown (TMDB has posters at 220 and 300
+            // wide too): a fraction of the download and the decoding.
+            source: Settings.tv ? Vod.picture(root.source, root.width > 220 ? 300 : 220) : root.source
             asynchronous: true
             cache: true
             fillMode: Image.PreserveAspectCrop
