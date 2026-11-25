@@ -62,6 +62,10 @@ Rectangle {
     Behavior on height { NumberAnimation { duration: Theme.animFast } }
 
     Timer { id: hideTimer; interval: 5000; onTriggered: root.hide() }
+    // Stays up while the pointer is over it (its buttons, on a TV).
+    HoverHandler {
+        onHoveredChanged: if (hovered) hideTimer.stop(); else if (root.shown) hideTimer.restart()
+    }
     Timer {
         interval: 15000; repeat: true; running: root.visible; triggeredOnStart: true
         onTriggered: root.nowMs = Date.now()
@@ -280,6 +284,17 @@ Rectangle {
                             }
                         }
                     }
+                }
+
+                // On a TV: where the remote's missing buttons would go, for
+                // the Magic Remote's pointer.
+                Row {
+                    visible: Settings.tv
+                    anchors.right: parent.right
+                    spacing: 8
+                    PillButton { icon: Icons.guide; text: qsTr("Guide"); fontSize: Theme.fontSmall; onClicked: Remote.trigger("guide") }
+                    PillButton { icon: Icons.movies; text: qsTr("Movies"); fontSize: Theme.fontSmall; onClicked: Remote.trigger("movies") }
+                    PillButton { icon: Icons.search; text: qsTr("Search"); fontSize: Theme.fontSmall; onClicked: Remote.trigger("search") }
                 }
 
                 Text {

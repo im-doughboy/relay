@@ -1,9 +1,10 @@
-# Builds the webOS spike on GitHub's machines, the same way as on your own
-# computer (platform/webos/README.md): the openlgtv webOS SDK, a small static
-# FFmpeg, and the Qt version MSYS2 gives the Windows build, so both share one Qt.
+# Builds Relay for webOS and the webOS spike on GitHub's machines, the same way
+# as on your own computer (platform/webos/README.md): the openlgtv webOS SDK, a
+# small static FFmpeg, and the Qt version MSYS2 gives the Windows build, so
+# both share one Qt.
 #
-# - Pushes to main and pull requests that touch the webOS port or the stream
-#   relay: build, and keep the IPK with the run (Actions → the run → Artifacts).
+# - Pushes to main and pull requests that touch Relay's code or screens, or the
+#   webOS port: build, and keep the IPKs with the run (Actions → the run → Artifacts).
 # - Or start it by hand: Actions → webOS build → Run workflow.
 #
 # If MSYS2 moves to a Qt version that has no platform/webos/qt-patches/<version>/
@@ -16,15 +17,21 @@ on:
     branches: [main]
     paths:
       - 'platform/webos/**'
-      - 'src/cast/**'
+      - 'src/**'
+      - 'qml/**'
+      - 'CMakeLists.txt'
       - 'packaging/icons/relay.png'
+      - 'packaging/fonts/**'
       - '.github/workflows/webos.yml'
       - '!**/*.md'
   pull_request:
     paths:
       - 'platform/webos/**'
-      - 'src/cast/**'
+      - 'src/**'
+      - 'qml/**'
+      - 'CMakeLists.txt'
       - 'packaging/icons/relay.png'
+      - 'packaging/fonts/**'
       - '.github/workflows/webos.yml'
       - '!**/*.md'
   workflow_dispatch:
@@ -137,10 +144,25 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Built $ipk with Qt ${{ steps.qt.outputs.version }}"
 
-      - name: Keep the package with the run
+      - name: Relay for the TV
+        id: app
+        run: |
+          platform/webos/build-app.sh "$SDK" dist-app ~/webos-qt/qt-target ~/webos-qt/qt-host
+          version=$(sed -nE 's/^project\(Relay VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the spike's package with the run
         uses: actions/upload-artifact@v6
         with:
           name: relay-spike-${{ steps.spike.outputs.version }}-webos
           path: dist/*.ipk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Keep Relay's package with the run
+        uses: actions/upload-artifact@v6
+        with:
+          name: relay-${{ steps.app.outputs.version }}-webos
+          path: dist-app/*.ipk
           if-no-files-found: error
           retention-days: 30

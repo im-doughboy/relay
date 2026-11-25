@@ -609,8 +609,9 @@ FocusScope {
         }
     }
 
-    // Shortcut hint
+    // Shortcut hint (keyboard keys: not on a TV)
     Text {
+        visible: !Settings.tv
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: 10

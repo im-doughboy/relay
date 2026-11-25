@@ -310,9 +310,12 @@ private slots:
     void redact()
     {
         QCOMPARE(Log::redact(QStringLiteral("http://h/xmltv.php?username=u&password=secret")),
-                 QStringLiteral("http://h/xmltv.php?username=u&password=***"));
+                 QStringLiteral("http://h/xmltv.php?username=~&password=***"));
         QCOMPARE(Log::redact(QStringLiteral("http://h:80/live/user/secret/101.ts")),
-                 QStringLiteral("http://h:80/live/user/***/101.ts"));
+                 QStringLiteral("http://h:80/live/~/***/101.ts"));
+        QCOMPARE(Log::redact(QStringLiteral("Playlist: loading http://name:pw@h/get.php?type=m3u")),
+                 QStringLiteral("Playlist: loading http://~@h/get.php?type=m3u"));
+        QCOMPARE(Log::redact(QStringLiteral("Tuned: 1 News HD")), QStringLiteral("Tuned: 1 News HD"));
     }
 
     void xtream_auth()

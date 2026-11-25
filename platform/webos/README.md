@@ -41,10 +41,62 @@ of the SDL status bar.
 
 ## Screens
 
-SDL keeps the window, input and video layer. Qt Quick draws into SDL's GL
-context through `QQuickRenderControl`; there is no Wayland platform plugin.
-`qpa-sdl/` is a small Qt platform plugin that hands Qt SDL's context, and the
-spike's `ui=1` is the first use of it.
+SDL keeps the window, input and video layer, and Qt Quick draws into SDL's GL
+context; there is no Wayland platform plugin. `qpa-sdl/` is a small Qt
+platform plugin that hands Qt SDL's context. The spike's `ui=1` draws through
+`QQuickRenderControl`. Relay itself can't: its `Main.qml` is a QML `Window`,
+which Qt creates itself. For Relay the plugin makes that window SDL's: Qt
+Quick draws on the main thread (no threaded OpenGL), swaps through SDL at up to
+60 frames a second, and gets SDL's keys, pointer and typed text. The window
+always reports full screen and ignores requests to leave it, since Back
+arrives as Escape and Relay's Escape leaves full screen on a computer.
+
+## Relay on the TV
+
+`app/` builds Relay's own `src/main.cpp`, code and QML for the TV:
+
+    platform/webos/build-app.sh <sdk-dir> <out-dir> <qt-work-dir>/qt-target <qt-work-dir>/qt-host
+
+- `app/TvPlatform.cpp` runs first (`RELAY_WEBOS` in `main.cpp`): the TV's
+  services (`app/TvLuna.cpp`, registered before SDL and shared with it, or
+  the TV keeps the Back button), SDL's window and OpenGL ES context, Qt's
+  `sdl` platform, a UTF-8 locale, and a crash note in `crash.log`.
+- `app/TvVideo` is `Relay.Video`'s `MpvVideo` on the TV, with the same QML
+  interface as `src/player/MpvItem`. Where it plays, it leaves the screen
+  see-through to the TV's video layer. Playback is not connected yet.
+- Relay keeps its settings, guide and log in `/media/developer/temp/relay`
+  (`RELAY_DATA` changes it), because the app's own folder is replaced by each
+  update. The log is `data/Relay/Relay/relay.log` there.
+- `Settings.tv` is true, and Settings hides what needs a file or folder
+  picker: choosing a playlist file, the recordings folder, an external
+  player, and backup and restore. Before the first playlist, the phone remote
+  is on and its pairing code shows, to type the address on a phone.
+
+The remote. webOS gives apps the arrows, OK, Back and CH ∧/∨ only: it keeps
+GUIDE, 123, AI, ?, the gear and the dashboard button, and asking for them
+(SDL's `SDL_HINT_WEBOS_WINDOW_KEYMASK`, decimal or hex) changed nothing on a
+2025 TV. On the TV:
+
+| Button | Relay |
+|---|---|
+| OK | channel list; held: TV guide (`app/TvRemote.cpp`) |
+| ∧ ∨, CH ∧ ∨ | channels |
+| → | what's on |
+| Back | closes what's open; on the live picture, Relay's menu (Guide, Movies, Search, Settings, Leave Relay) |
+
+Holding Back is the TV's own "leave this app", so it can't be given a job.
+The info bar has Guide, Movies and Search buttons for the Magic Remote's
+pointer, and a hint line names the buttons.
+
+In the background (the TV's home screen, another app or input), Relay stops
+drawing, reports itself suspended, and its player lets go of the TV's video
+decoder; launched again, it's back on the same screen and channel.
+
+TV items for later:
+
+- Game controllers: Relay's `Gamepads` reads SDL's events itself, which would
+  take them from the window, so it is off on the TV for now.
+- Where saved logins and Relay's files should live for good.
 
 ## Porting Relay
 
@@ -84,4 +136,5 @@ Parts that need a TV answer:
   elsewhere it reports none. The TV needs a decision on where logins live.
 - **The phone remote** stays. Unlike the stream relay, its server listens on
   the network, because the phone connects over Wi-Fi.
-- **Game controllers** already go through SDL, which the TV has.
+- **Game controllers** go through SDL, which the TV has, but `Gamepads` has to
+  share SDL's events with the window first (see above).

@@ -757,6 +757,9 @@ Window {
                 if (Player.pendingNumber.length) Player.cancelNumber()
                 else if (shortcuts.opened) shortcuts.opened = false
                 else if (infoBar.shown) infoBar.hide()
+                // A TV is always full screen, and its remote has few buttons:
+                // Back opens Relay's menu (Guide, Movies, Settings, Leave Relay).
+                else if (Settings.tv) win.openMenu()
                 else if (win.visibility === Window.FullScreen) win.visibility = Window.Windowed
                 break
             case Qt.Key_F:
@@ -1034,9 +1037,11 @@ Window {
         RelayMenuItem { text: qsTr("Channel info"); onTriggered: infoBar.toggle() }
         RelayMenuItem { text: qsTr("Channel list"); onTriggered: channelPanel.open() }
         RelayMenuItem { text: qsTr("TV guide"); onTriggered: win.openGuide() }
-        RelayMenuItem { text: qsTr("Multi-view"); enabled: Player.hasChannel; onTriggered: win.openMultiView() }
-        RelayMenuItem { text: pip.active ? qsTr("Close picture-in-picture") : qsTr("Picture-in-picture"); enabled: Player.hasChannel; onTriggered: win.togglePip() }
-        RelayMenuItem { text: Cast.active ? qsTr("Casting…") : qsTr("Cast to a TV…"); onTriggered: castPicker.open() }
+        RelayMenuItem { text: qsTr("Search"); visible: Settings.tv; enabled: visible; onTriggered: win.openSearch() }
+        // A TV has one video decoder for apps and nothing to cast to.
+        RelayMenuItem { text: qsTr("Multi-view"); visible: !Settings.tv; enabled: visible && Player.hasChannel; onTriggered: win.openMultiView() }
+        RelayMenuItem { text: pip.active ? qsTr("Close picture-in-picture") : qsTr("Picture-in-picture"); visible: !Settings.tv; enabled: visible && Player.hasChannel; onTriggered: win.togglePip() }
+        RelayMenuItem { text: Cast.active ? qsTr("Casting…") : qsTr("Cast to a TV…"); visible: !Settings.tv; enabled: visible; onTriggered: castPicker.open() }
         RelayMenuItem {
             text: Player.currentIndex >= 0 && Channels.isFavorite(Player.currentIndex) ? qsTr("Remove from Favorites") : qsTr("Add to Favorites")
             enabled: Player.hasChannel
@@ -1045,6 +1050,8 @@ Window {
                 toast.show(fav ? qsTr("Added to Favorites") : qsTr("Removed from Favorites"))
             }
         }
+        MenuSeparator { visible: Settings.tv; height: visible ? implicitHeight : 0; contentItem: Rectangle { implicitHeight: 1; color: Theme.border } }
+        RelayMenuItem { text: qsTr("Leave Relay"); visible: Settings.tv; enabled: visible; onTriggered: Qt.quit() }
     }
 
     VodBrowser {
@@ -1255,6 +1262,27 @@ Window {
                 color: Theme.text
                 font.pixelSize: Theme.fontSmall + 1
             }
+        }
+    }
+
+    // On a TV: what the remote's few buttons do on the live picture, shown
+    // with the channel's details.
+    Rectangle {
+        visible: Settings.tv && infoBar.shown && !win.showSetup && !channelPanel.opened && !guide.opened
+                 && !vodBrowser.opened && !liveMenu.opened
+        z: 21
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: 28
+        width: tvHints.implicitWidth + 32
+        height: 40
+        radius: 20
+        color: "#CC000000"
+        Text {
+            id: tvHints
+            anchors.centerIn: parent
+            text: qsTr("OK  channel list  (hold: guide)   ·   ∧ ∨  channels   ·   →  what's on   ·   Back  menu")
+            color: Theme.text
+            font.pixelSize: Theme.fontBody
         }
     }
 

@@ -10,8 +10,10 @@ namespace Log {
 void install(const QString &dataDir);
 QString filePath();
 
-// Hides passwords in URLs before logging: query "password=" values and the
-// credentials in Xtream stream paths (/live/user/pass/...).
+// Hides logins in URLs: "password=" values become "***", "username=" (and
+// user, login, mac) values "~", Xtream stream paths /live/~/***/..., and a
+// login before the host (http://name:pass@host) "~@". Every log line passes
+// through it.
 QString redact(const QString &url);
 
 } // namespace Log

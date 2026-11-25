@@ -27,9 +27,11 @@ void handler(QtMsgType type, const QMessageLogContext &, const QString &msg)
     case QtFatalMsg: level = "FATAL"; break;
     default: break;
     }
+    // Every line, not only the addresses Relay logs itself: Qt's own messages
+    // (a picture that didn't load, say) can carry a provider's address too.
     const QByteArray line = QStringLiteral("%1 %2 %3\n")
                                 .arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss.zzz")),
-                                     QString::fromLatin1(level), msg)
+                                     QString::fromLatin1(level), Log::redact(msg))
                                 .toUtf8();
     QMutexLocker lock(&g_mutex);
     if (g_file) {
@@ -62,13 +64,20 @@ QString filePath() { return g_path; }
 
 QString redact(const QString &url)
 {
-    static const QRegularExpression query(QStringLiteral("(password=)[^&\\s]*"),
-                                          QRegularExpression::CaseInsensitiveOption);
+    // People share their logs: the login's name becomes "~" and its password "***".
+    static const QRegularExpression password(QStringLiteral("(\\bpassword=)[^&\\s]*"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression username(QStringLiteral("(\\b(username|user|login|mac)=)[^&\\s]*"),
+                                             QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression path(
         QStringLiteral("/(live|movie|series|timeshift)/([^/\\s]+)/([^/\\s]+)/"));
+    static const QRegularExpression userInfo(QStringLiteral("(://)[^/@\\s]+@"));
+    if (!url.contains(QLatin1Char('=')) && !url.contains(QLatin1Char('/'))) return url;
     QString s = url;
-    s.replace(query, QStringLiteral("\\1***"));
-    s.replace(path, QStringLiteral("/\\1/\\2/***/"));
+    s.replace(password, QStringLiteral("\\1***"));
+    s.replace(username, QStringLiteral("\\1~"));
+    s.replace(path, QStringLiteral("/\\1/~/***/"));
+    s.replace(userInfo, QStringLiteral("\\1~@"));
     return s;
 }
 

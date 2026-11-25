@@ -215,6 +215,7 @@ set(RELAY_QML_FILES
     qml/CloseButton.qml
     qml/ControlBar.qml
     qml/ShortcutsPanel.qml
+    qml/PhonePairing.qml
 )
 set_source_files_properties(qml/Theme.qml qml/Icons.qml qml/Keymap.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 # Place QML files next to the module's qmldir (qrc:/Relay/Main.qml) so the

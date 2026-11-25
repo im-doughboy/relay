@@ -59,9 +59,17 @@ class AppSettings : public QObject
     Q_PROPERTY(QVariantList playlists READ playlists NOTIFY playlistsChanged)
     Q_PROPERTY(QString activeId READ activeId NOTIFY sourceChanged)
     Q_PROPERTY(QString activeName READ activeName NOTIFY playlistsChanged)
+    // Relay on a TV (webOS): screens hide what the TV can't do, such as file pickers.
+    Q_PROPERTY(bool tv READ tv CONSTANT)
 
 public:
     explicit AppSettings(QObject *parent = nullptr);
+
+#ifdef RELAY_WEBOS
+    static constexpr bool tv() { return true; }
+#else
+    static constexpr bool tv() { return false; }
+#endif
 
     // ---- the active playlist ----
     bool hasSource() const;

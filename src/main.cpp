@@ -15,7 +15,12 @@
 #include "app/OtherPlaylists.h"
 #include "epg/EpgService.h"
 #include "models/ChannelModel.h"
+#ifdef RELAY_WEBOS
+#include "TvPlatform.h"   // platform/webos/app: SDL's window and the TV's player
+#include "TvVideo.h"
+#else
 #include "player/MpvItem.h"
+#endif
 #include "player/PlayerController.h"
 #include "sources/PlaylistService.h"
 #include "sources/XtreamParser.h"
@@ -94,6 +99,9 @@ void darkTitleBar(QWindow *window)
 
 int main(int argc, char *argv[])
 {
+#ifdef RELAY_WEBOS
+    if (!tvPrepare()) return 1;
+#endif
     // libmpv renders through OpenGL, so the scene graph must use OpenGL too
     // (Qt 6 defaults to Direct3D on Windows and Metal on macOS).
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);

@@ -355,6 +355,33 @@ FocusScope {
             }
         }
 
+        // On a TV, typing a playlist address with the remote is slow: the
+        // phone remote comes first, and its page types into the field. Before
+        // the first playlist it's already on, with its code showing.
+        Column {
+            visible: Settings.tv && (!Settings.hasSource || root.newPlaylist)
+            width: card.width
+            spacing: 10
+            Component.onCompleted: if (Settings.tv && !Settings.hasSource && !Phone.enabled) Phone.enabled = true
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: Phone.running ? qsTr("Pair your phone, then type the address on it: it goes into the box with the orange border.")
+                                    : qsTr("Long address? Type it on your phone instead: no app to install, it opens in the phone's browser on the same Wi-Fi.")
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSmall
+            }
+            ActionButton {
+                text: Phone.enabled ? qsTr("Phone remote: on") : qsTr("Type with my phone")
+                primary: Phone.enabled
+                onClicked: { Phone.enabled = !Phone.enabled; root.focusFirst() }
+            }
+            PhonePairing {
+                visible: Phone.running
+                width: card.width
+            }
+        }
+
 
         // ---- Playlist ----
         Column {
@@ -479,10 +506,11 @@ FocusScope {
                     label: qsTr("Playlist URL or file")
                     placeholder: "http://provider.example/get.php?…"
                     onAccepted: root.submit()
-                    KeyNavigation.tab: browseButton
+                    KeyNavigation.tab: Settings.tv ? submitButton : browseButton
                 }
                 ActionButton {
                     id: browseButton
+                    visible: !Settings.tv   // the TV has no file picker
                     text: qsTr("Choose file…")
                     onClicked: fileDialog.open()
                     KeyNavigation.tab: submitButton
@@ -836,7 +864,7 @@ FocusScope {
 
             // Recordings folder
             Row {
-                visible: Session.ready
+                visible: Session.ready && !Settings.tv   // the TV has no folder picker
                 width: card.width
                 spacing: 12
                 Text {
@@ -1163,6 +1191,7 @@ FocusScope {
                 ActionButton { text: qsTr("Change keys…"); onClicked: keysDialog.open() }
             }
             Column {
+                visible: !Settings.tv   // no other players or file picker on the TV
                 width: card.width
                 spacing: 8
                 Text {
@@ -1231,67 +1260,11 @@ FocusScope {
                     color: Theme.textMuted
                     font.pixelSize: Theme.fontSmall
                 }
-                Row {
+                PhonePairing {
                     visible: Phone.running
-                    spacing: 20
-                    topPadding: 6
-                    // Scan with the phone's camera.
-                    Rectangle {
-                        width: 152; height: 152
-                        radius: 8
-                        color: "white"
-                        visible: Phone.url.length > 0
-                        Canvas {
-                            id: qrCanvas
-                            anchors.fill: parent
-                            anchors.margins: 10
-                            property var code: Phone.url.length ? Phone.qr(Phone.url) : null
-                            onCodeChanged: requestPaint()
-                            onPaint: {
-                                const ctx = getContext("2d")
-                                ctx.reset()
-                                if (!code) return
-                                const n = code.size, cell = width / n
-                                ctx.fillStyle = "#000000"
-                                for (let y = 0; y < n; ++y)
-                                    for (let x = 0; x < n; ++x)
-                                        if (code.modules[y * n + x] === "1")
-                                            ctx.fillRect(Math.floor(x * cell), Math.floor(y * cell), Math.ceil(cell), Math.ceil(cell))
-                            }
-                        }
-                    }
-                    Column {
-                        spacing: 6
-                        width: card.width - 172
-                        anchors.verticalCenter: parent.verticalCenter
-                        Text {
-                            width: parent.width
-                            wrapMode: Text.Wrap
-                            text: Phone.url.length ? qsTr("Scan the code with the phone's camera, or open %1 in its browser.").arg(Phone.url)
-                                                   : qsTr("This computer isn't on a home network right now.")
-                            color: Theme.text
-                            font.pixelSize: Theme.fontBody - 1
-                        }
-                        Text {
-                            text: qsTr("Pairing code")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fontSmall
-                        }
-                        Text {
-                            text: Phone.code.split("").join(" ")
-                            color: Theme.accent
-                            font.pixelSize: Theme.fontLarge + 8
-                            font.weight: Font.DemiBold
-                            font.family: "monospace"
-                        }
-                        Text {
-                            width: parent.width
-                            wrapMode: Text.Wrap
-                            text: qsTr("Only phones on your home network that know this code can use it. If Windows asks whether Relay may use the network, allow private networks.")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fontSmall
-                        }
-                    }
+                    width: card.width
+                    note: Settings.tv ? qsTr("Only phones on your home network that know this code can use it.")
+                                      : qsTr("Only phones on your home network that know this code can use it. If Windows asks whether Relay may use the network, allow private networks.")
                 }
             }
 
@@ -1474,6 +1447,7 @@ FocusScope {
 
             // Backup and restore
             Column {
+                visible: !Settings.tv   // needs a file picker
                 width: card.width
                 spacing: 8
                 Text {
