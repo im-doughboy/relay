@@ -229,7 +229,13 @@ void TvPlayer::handleEvent(int generation, const QByteArray &payload)
     if (e.contains(QStringLiteral("bufferingStart"))) emit buffering(true);
     if (e.contains(QStringLiteral("bufferingEnd"))) emit buffering(false);
     if (e.contains(QStringLiteral("endOfStream"))) emit ended();
-    if (e.contains(QStringLiteral("currentTime"))) emit positionChanged(e.value(QStringLiteral("currentTime")).toDouble() / 1000.0);
+    if (e.contains(QStringLiteral("currentTime"))) {
+        // {"currentTime":{"currentTime":10183,"mediaId":…}}, in milliseconds.
+        // Read as a plain number it was 0, and movies stayed at 0:00.
+        const QJsonValue t = e.value(QStringLiteral("currentTime"));
+        const double ms = t.isObject() ? t.toObject().value(QStringLiteral("currentTime")).toDouble() : t.toDouble();
+        emit positionChanged(ms / 1000.0);
+    }
     if (e.contains(QStringLiteral("error"))) {
         const QJsonObject err = e.value(QStringLiteral("error")).toObject();
         const QString text = err.value(QStringLiteral("errorText")).toString();
