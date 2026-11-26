@@ -29,7 +29,15 @@ Later, Settings → **Add or change a playlist on your phone** shows the same QR
 
 Safety (decided): local network only, no access from outside. A one-time pairing code per QR code,
 expiring after 15 minutes or once used. Logins go from the phone to Relay and are never shown back;
-they stay in the system's credential store. Setup mode turns itself off once a playlist is added.
+they stay in the system's credential store on Windows and Mac. Setup mode turns itself off once a
+playlist is added.
+
+Logins on the TV (decided): webOS has no credential store, so they go in a file in Relay's private
+data folder, which other apps can't read. Never in logs; backups are locked from 0.7.
+
+**Trakt with just a code (decided):** Relay ships its own Trakt app (a public Client ID only, no
+secret), so connecting Trakt is entering a code at trakt.tv/activate. "Use your own app" stays as an
+option in Settings.
 
 Done when:
 - [ ] A new install on Windows and on the TV is set up without typing on the TV.
@@ -38,6 +46,8 @@ Done when:
 - [ ] A backup restores from the phone.
 - [ ] After setup Relay offers a backup, and a second device is set up from it in under two minutes.
 - [ ] Works on an iPhone and an Android phone with no app to install.
+- [ ] On the TV, logins are stored only in Relay's private data folder.
+- [ ] Trakt connects on Windows and the TV by entering a code, without creating a Trakt app.
 
 ## 0.7: Reliability and trust
 

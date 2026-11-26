@@ -13,6 +13,7 @@ Read this before starting any work in this repository.
 
 ## Working together
 
+- Start Claude Code in this repository's folder, so this file loads at the start of every session.
 - More than one Claude session may work on this repo. Pull before editing, and keep to the files
   your task needs. If another session said it is working in some files, leave them alone until it
   pushes.
@@ -25,8 +26,10 @@ Read this before starting any work in this repository.
   No `Co-Authored-By`, `Claude-Session` or other AI attribution lines in commit messages or pull
   requests. Never put the owner's personal email address, provider logins or stream addresses in code,
   commits, logs, tests or docs.
-- API tokens (TMDB, Trakt, GitHub) live only in the user's settings or the system's credential
-  store, never in the code.
+- Secrets and people's own sign-ins (API keys, client secrets, access and refresh tokens for TMDB,
+  Trakt, GitHub) live only in the user's settings or the system's credential store, never in the
+  code. A public Client ID for a sign-in built for apps that can't keep secrets (Trakt's device
+  code or PKCE sign-in) is not a secret and may ship with Relay.
 - Run the tests before pushing, and check both CI builds (Windows and webOS) after pushing.
 - User-visible changes go in CHANGELOG.md, written for the people using Relay.
 - Don't push tags or publish releases: the owner releases by pushing a version tag.
