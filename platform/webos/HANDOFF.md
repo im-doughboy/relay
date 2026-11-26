@@ -34,9 +34,16 @@ Tested 26 November (13:48 to 13:56), theory **not** confirmed:
 - New theory: the stream server refuses a second request on the redirected address (single-use or
   still counted), and a fresh start through S1 works (every new start played ~30 s). If so,
   waiting and resuming the same source would only play in ~30 s pieces: not built.
-- Next experiment, needs the owner's OK: play the movie through Relay's relay on the TV, so every
-  request to the provider starts from the playlist's address. Both servers answer on http, so the
-  redirect policy doesn't block it here.
+- Tried (owner's OK): movies through Relay's relay on the TV (`direct = false` in
+  `TvVideo::open`, an uncommitted experiment). No 509 in over 4 minutes: the player still reconnects
+  about once a minute, and each request now starts from the playlist's address.
+- Found on the way, fixed and pushed: the relay read the whole movie ahead of the player after a
+  redirect (Qt drops the read limit on the redirected request) and the TV ran out of memory and
+  restarted, twice (dd4ec91); and the TV showed 0:00 for every movie because the player's
+  `currentTime` is an object (ea9161d).
+- Waiting for the owner: whether movies go through the relay on the TV for good. The TV has the
+  experimental build installed until then; `/opt/relay-webos/relay` in WSL holds the uncommitted
+  `direct = false` change.
 
 Decided by the owner (26 November): the relay fallback keeps its redirect policy (no https-to-http).
 - Switching to another source automatically is ROADMAP 0.7 ("Switch to a working copy", movies
