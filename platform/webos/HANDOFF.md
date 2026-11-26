@@ -24,10 +24,21 @@ Fixed already (8c099cd): the TV's player reports "end of stream" about 30 s afte
 and Relay took that as the movie finishing (saved it as watched, told Trakt, left the movie). It's
 ignored now (`TvVideo::onEnded`). The source chooser closes when the movie closes.
 
-Not done, and needs the owner's OK:
-- Test the theory: stop live TV, wait 60 s, then start the movie. No 509 would confirm it.
-- If confirmed: after a 509, wait about 30 s and resume the same source at the same point.
-- Following https-to-http redirects in the relay fallback (a security trade-off, shared code).
+Tested 26 November (13:48 to 13:56), theory **not** confirmed:
+- The same movie on the same source got a 509 four times, three of them after nothing had played
+  for 100 s or more (live TV's relay connection closed about 5 s after the first movie started).
+- Sampled every 0.3 s, the TV's player never had two connections to the provider. It goes to the
+  playlist's server (S1), is redirected to a stream server (S2) and plays from S2. After 23 to 38 s
+  that connection closes; 1 to 3 s later the player asks S2 again, straight away (not through S1),
+  and that request gets the 509.
+- New theory: the stream server refuses a second request on the redirected address (single-use or
+  still counted), and a fresh start through S1 works (every new start played ~30 s). If so,
+  waiting and resuming the same source would only play in ~30 s pieces: not built.
+- Next experiment, needs the owner's OK: play the movie through Relay's relay on the TV, so every
+  request to the provider starts from the playlist's address. Both servers answer on http, so the
+  redirect policy doesn't block it here.
+
+Decided by the owner (26 November): the relay fallback keeps its redirect policy (no https-to-http).
 - Switching to another source automatically is ROADMAP 0.7 ("Switch to a working copy", movies
   and episodes across playlists, decided). Not before 0.6.
 
