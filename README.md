@@ -772,7 +772,7 @@ tests/        unit tests
 ## What's next
 
 - **User profiles** and **radio channels**.
-- Casting: subtitles and audio track choices on the TV.
+- Casting: subtitles on the TV.
 - Ready-made downloads for Mac and Linux.
 
 ## Reporting problems
