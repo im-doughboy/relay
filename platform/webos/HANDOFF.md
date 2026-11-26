@@ -95,7 +95,6 @@ Check that tests can't reach the real app's settings or logins before running th
 
 ## Other open items
 
-- The owner's Windows Relay needs two playlist links pasted again (see above).
 - 0.6 decisions (ROADMAP): logins on the TV go in a file in Relay's private data folder; Relay
   ships its own Trakt app (public Client ID, device code), with "use your own app" kept in Settings.
 - Trakt without a Client Secret works on the TV: sign-in and a forced refresh were checked against

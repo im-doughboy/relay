@@ -353,7 +353,13 @@ FocusScope {
                     path: Icons.search
                     color: Theme.textMuted
                 }
-                onTextChanged: { filterTimer.restart(); if (text.length) root.browsing = false }
+                onTextChanged: {
+                    filterTimer.restart()
+                    if (!text.length) return
+                    root.browsing = false
+                    // A search looks through everything, not the category that was open.
+                    if (Vod.category !== "all") { Vod.category = "all"; root.syncCategory() }
+                }
                 Keys.onUpPressed: tabBar.forceActiveFocus()
                 Keys.onDownPressed: root.browsing ? home.focusRows() : grid.forceActiveFocus()
                 Keys.onReturnPressed: { filterTimer.stop(); Vod.filter = text; grid.forceActiveFocus() }
