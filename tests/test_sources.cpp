@@ -2565,6 +2565,45 @@ private slots:
                                                          .arg(sent / (1024 * 1024))));
     }
 
+    // A provider that doesn't answer a request at all: the relay asks again
+    // from the first address, before the player gives up.
+    void cast_asks_again_when_provider_hangs()
+    {
+        int requests = 0;
+        QTcpServer provider;
+        QVERIFY(provider.listen(QHostAddress::LocalHost));
+        connect(&provider, &QTcpServer::newConnection, this, [&] {
+            QTcpSocket *s = provider.nextPendingConnection();
+            connect(s, &QTcpSocket::readyRead, s, [&, s] {
+                const QByteArray req = s->readAll();
+                if (!req.startsWith("GET ")) return;
+                if (++requests == 1) return;   // the first one: silence
+                if (req.startsWith("GET /movie/u/p/1.mkv ")) {
+                    s->write("HTTP/1.1 302 Found\r\nLocation: /stream/1.mkv?token=t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                } else {
+                    QVERIFY(req.contains("\r\nRange: bytes=100-"));
+                    s->write("HTTP/1.1 206 Partial Content\r\nContent-Type: video/x-matroska\r\nContent-Range: bytes 100-104/105\r\n"
+                             "Content-Length: 5\r\nConnection: close\r\n\r\nmovie");
+                }
+                s->disconnectFromHost();
+            });
+        });
+        CastRelay relay;
+        relay.setAnswerTimeout(300);
+        CastRelay::Source movie;
+        movie.url = QStringLiteral("http://127.0.0.1:%1/movie/u/p/1.mkv").arg(provider.serverPort());
+        const QString path = relay.add(movie);
+        QNetworkAccessManager net;
+        QNetworkRequest req{QUrl(relay.urlFor(path, QHostAddress::LocalHost))};
+        req.setRawHeader("Range", "bytes=100-");
+        QNetworkReply *r = net.get(req);
+        QTRY_VERIFY_WITH_TIMEOUT(r->isFinished(), 5000);
+        QCOMPARE(r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 206);
+        QCOMPARE(r->readAll(), QByteArray("movie"));
+        QCOMPARE(requests, 3);   // the silent one, then the playlist's address again and its redirect
+        r->deleteLater();
+    }
+
     // A Fire TV (or anything else) added as a Chromecast: say what it is.
     void cast_not_a_chromecast()
     {

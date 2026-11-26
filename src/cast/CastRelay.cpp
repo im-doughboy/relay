@@ -313,8 +313,9 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
 }
 
 void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &url, const QByteArray &method,
-                     const QHash<QByteArray, QByteArray> &headers, int hops)
+                     const QHash<QByteArray, QByteArray> &headers, int hops, int retries, QString origin)
 {
+    if (origin.isEmpty()) origin = url;
     const Source source = m_entries.value(token).source;
     QNetworkRequest req{QUrl(url)};
     if (!source.userAgent.isEmpty()) req.setRawHeader("User-Agent", source.userAgent.toUtf8());
@@ -330,6 +331,18 @@ void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &ur
     QPointer<QTcpSocket> sock(socket);
 
     auto state = std::make_shared<int>(0);   // 0 waiting for headers, 1 streaming, 2 collecting a playlist
+    // A provider that doesn't answer at all (seen 47 minutes into a movie,
+    // on the TV player's 45th request): ask again from the first address
+    // before the player gives up (the TV's waits 40 s).
+    auto noAnswer = std::make_shared<bool>(false);
+    auto *answerTimer = new QTimer(up);
+    answerTimer->setSingleShot(true);
+    connect(answerTimer, &QTimer::timeout, up, [up, state, noAnswer] {
+        if (*state != 0 || !up->isRunning()) return;
+        *noAnswer = true;
+        up->abort();
+    });
+    answerTimer->start(m_answerTimeoutMs);
     auto playlistBody = std::make_shared<QByteArray>();
     auto pump = [up, sock, state] {
         if (!sock || *state != 1) return;
@@ -388,13 +401,23 @@ void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &ur
             return;
         }
         if (*state == 0) {   // never got going
+            if (*noAnswer) {
+                if (retries < 2) {
+                    qWarning().noquote() << "Cast: the provider didn't answer in" << m_answerTimeoutMs / 1000 << "s; asking again";
+                    pipe(sock, token, origin, method, headers, 0, retries + 1, origin);
+                    return;
+                }
+                qWarning().noquote() << "Cast: the provider didn't answer";
+                reply(sock, 502, "text/plain", "provider error");
+                return;
+            }
             const int status = up->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QUrl to = up->url().resolved(up->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl());
             if (status >= 300 && status < 400 && to.isValid() && !to.isRelative()) {
                 // Never from https to http (as Qt's NoLessSafeRedirectPolicy), at most 5 hops.
                 const bool lessSafe = up->url().scheme() == QLatin1String("https") && to.scheme() != QLatin1String("https");
                 if (hops < 5 && !lessSafe && (to.scheme() == QLatin1String("http") || to.scheme() == QLatin1String("https"))) {
-                    pipe(sock, token, to.toString(), method, headers, hops + 1);
+                    pipe(sock, token, to.toString(), method, headers, hops + 1, retries, origin);
                     return;
                 }
                 qWarning().noquote() << "Cast: not following the provider's redirect"

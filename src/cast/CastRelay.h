@@ -63,6 +63,9 @@ public:
     // Where the server listens; set before the first add(). By default all
     // IPv4 interfaces, because TVs and Chromecasts connect over the network.
     void setListenAddress(const QHostAddress &address);
+    // How long a provider gets to start answering before the relay asks
+    // again (10 s; tests use less).
+    void setAnswerTimeout(int ms) { m_answerTimeoutMs = ms; }
 
     // HLS playlist lines pointing elsewhere -> through the relay. `register_`
     // gets each absolute address and returns the path to use instead.
@@ -91,7 +94,7 @@ private:
     void onConnection();
     void onRequest(QTcpSocket *socket, const QByteArray &head);
     void pipe(QTcpSocket *socket, const QString &token, const QString &url, const QByteArray &method,
-              const QHash<QByteArray, QByteArray> &headers, int hops = 0);
+              const QHash<QByteArray, QByteArray> &headers, int hops = 0, int retries = 0, QString origin = QString());
     void startFeed(const QString &token);
     void serveShared(QTcpSocket *socket, const QString &token, const QByteArray &method,
                      const QHash<QByteArray, QByteArray> &headers);
@@ -109,6 +112,7 @@ private:
 
     QTcpServer *m_server;
     QNetworkAccessManager *m_net;
+    int m_answerTimeoutMs = 10000;
     QHash<QString, Entry> m_entries;   // token -> stream
     QList<Waiting> m_waiting;          // playlist requests before there are segments
     QTimer m_waitTimer;

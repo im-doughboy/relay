@@ -143,9 +143,12 @@ void TvVideo::open()
     setPaused(false);
     setBuffering(true);
     m_lastRect = QRect();
-    // A movie or episode: the TV's player fetches the file itself; if that
-    // doesn't start, once more through the relay. Live TV: the relay.
-    const bool direct = m_vod && m_attempt == 0;
+    // Everything through Relay's stream relay, movies and episodes too: the
+    // TV's player reconnects to a movie now and then, and asked straight at
+    // the provider's stream server again it got a 509 (cut off after 20 to
+    // 65 s). The relay starts each request from the playlist's address. A
+    // movie the relay doesn't get going plays once more, directly.
+    const bool direct = m_vod && m_attempt > 0;
     TvPlayer::instance()->load(this, m_url, m_userAgent, m_vod, direct);
     trackGeometry();
     applyVolume();
@@ -236,10 +239,15 @@ void TvVideo::onEnded()
 void TvVideo::onFailed(const QString &message)
 {
     qWarning().noquote() << "TV player:" << message;
+    // The TV's player reports one failure twice ("server error", then
+    // "Network Error"). With a retry already waiting, the second report is
+    // the same failure: taken as the retry failing, it showed the error and
+    // the source chooser over the movie the retry then played.
+    if (m_reconnectTimer.isActive()) return;
     // A live channel that played drops now and then: open it again a few
     // times, waiting longer each time. One that never started gets a single
     // quick second try before the error shows; a movie that never started,
-    // one more try through the relay.
+    // one more try straight from the provider.
     const int limit = m_vod ? (m_everStarted ? 0 : 1) : (m_everStarted ? kMaxReconnects : 1);
     if (!m_url.isEmpty() && m_attempt < limit) {
         ++m_attempt;

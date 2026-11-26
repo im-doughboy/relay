@@ -18,9 +18,13 @@ under **What's new** when it offers the update. Write it for the people using Re
   Relay for several seconds. Your own playlist's titles show at once, and the others join a
   moment later.
 - **Channel numbers of 10,000 and up** fit in the channel banner.
+- **Movies and series on the LG TV:** they no longer stop after half a minute with providers that
+  cut off the TV's player (error 509). Relay now passes them on to the TV's player itself, and
+  plays them directly if that doesn't start. The time shows while they play, and Continue
+  watching picks up where you stopped.
 - **Casting a movie no longer eats memory:** when a provider sends the movie on to another
   server, Relay downloaded it far ahead of the TV or Chromecast playing it. It now keeps pace
-  with the player.
+  with the player, and asks the provider again when it doesn't answer.
 - **Leaving a movie or an episode** opens its page again.
 - Big playlists load with about half the memory, and Relay's log hides usernames as well as
   passwords, so it's safer to share.
