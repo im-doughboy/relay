@@ -2512,6 +2512,59 @@ private slots:
         r->deleteLater();
     }
 
+    // A movie through the relay to a player that reads slowly (the TV's, a
+    // Chromecast): Relay reads from the provider only as fast as the player
+    // takes it. Reading ahead without limit filled the TV's memory and
+    // restarted it within half a minute.
+    void cast_movie_reads_at_players_pace()
+    {
+        const qint64 size = 2000LL * 1024 * 1024;   // a 2 GB movie, sent as fast as the network allows
+        qint64 sent = 0;
+        QTcpServer provider;
+        QVERIFY(provider.listen(QHostAddress::LocalHost));
+        connect(&provider, &QTcpServer::newConnection, this, [&] {
+            QTcpSocket *s = provider.nextPendingConnection();
+            connect(s, &QTcpSocket::readyRead, s, [&, s] {
+                const QByteArray req = s->readAll();
+                if (req.startsWith("GET /movie/u/p/1.mp4 ")) {   // the playlist's server sends it elsewhere
+                    s->write("HTTP/1.1 302 Found\r\nLocation: /stream/1.mp4?token=t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    s->disconnectFromHost();
+                    return;
+                }
+                s->write("HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: "
+                         + QByteArray::number(size) + "\r\nConnection: close\r\n\r\n");
+                auto more = [&, s] {
+                    while (s->bytesToWrite() < 1024 * 1024 && sent < size) {
+                        s->write(QByteArray(256 * 1024, 'M'));
+                        sent += 256 * 1024;
+                    }
+                };
+                connect(s, &QTcpSocket::bytesWritten, s, more);
+                more();
+            });
+        });
+        CastRelay relay;
+        CastRelay::Source movie;
+        movie.url = QStringLiteral("http://127.0.0.1:%1/movie/u/p/1.mp4").arg(provider.serverPort());
+        const QString path = relay.add(movie);
+        QVERIFY(!path.isEmpty());
+
+        // The player: asks for the movie, takes 1 MB, then pauses (its buffer is full).
+        QTcpSocket player;
+        player.setReadBufferSize(64 * 1024);
+        player.connectToHost(QHostAddress::LocalHost, relay.port());
+        QVERIFY(player.waitForConnected(3000));
+        player.write("GET " + path.toLatin1() + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        qint64 got = 0;
+        connect(&player, &QTcpSocket::readyRead, &player, [&] { if (got < 1024 * 1024) got += player.read(64 * 1024).size(); });
+        QTRY_VERIFY_WITH_TIMEOUT(got >= 1024 * 1024, 5000);
+        QTest::qWait(3000);
+        // Relay's own buffers (2 MB from the provider, 4 MB to the player) plus
+        // the system's socket buffers; not the movie.
+        QVERIFY2(sent < 64LL * 1024 * 1024, qPrintable(QStringLiteral("the provider sent %1 MB while the player took 1 MB")
+                                                         .arg(sent / (1024 * 1024))));
+    }
+
     // A Fire TV (or anything else) added as a Chromecast: say what it is.
     void cast_not_a_chromecast()
     {

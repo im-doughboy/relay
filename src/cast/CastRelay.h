@@ -91,7 +91,7 @@ private:
     void onConnection();
     void onRequest(QTcpSocket *socket, const QByteArray &head);
     void pipe(QTcpSocket *socket, const QString &token, const QString &url, const QByteArray &method,
-              const QHash<QByteArray, QByteArray> &headers);
+              const QHash<QByteArray, QByteArray> &headers, int hops = 0);
     void startFeed(const QString &token);
     void serveShared(QTcpSocket *socket, const QString &token, const QByteArray &method,
                      const QHash<QByteArray, QByteArray> &headers);

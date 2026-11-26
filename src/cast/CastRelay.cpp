@@ -313,14 +313,18 @@ void CastRelay::onRequest(QTcpSocket *socket, const QByteArray &head)
 }
 
 void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &url, const QByteArray &method,
-                     const QHash<QByteArray, QByteArray> &headers)
+                     const QHash<QByteArray, QByteArray> &headers, int hops)
 {
     const Source source = m_entries.value(token).source;
     QNetworkRequest req{QUrl(url)};
     if (!source.userAgent.isEmpty()) req.setRawHeader("User-Agent", source.userAgent.toUtf8());
     if (!source.referrer.isEmpty()) req.setRawHeader("Referer", source.referrer.toUtf8());
     if (headers.contains("range")) req.setRawHeader("Range", headers.value("range"));
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    // Redirects are followed here, each as a request of its own: Qt doesn't
+    // keep the read limit below on the request after a redirect, and Relay
+    // then read the whole movie ahead of the player (25 MB a second on the
+    // TV, until its memory ran out and it restarted).
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     QNetworkReply *up = method == "HEAD" ? m_net->head(req) : m_net->get(req);
     up->setReadBufferSize(2 * 1024 * 1024);
     QPointer<QTcpSocket> sock(socket);
@@ -385,6 +389,19 @@ void CastRelay::pipe(QTcpSocket *socket, const QString &token, const QString &ur
         }
         if (*state == 0) {   // never got going
             const int status = up->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QUrl to = up->url().resolved(up->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl());
+            if (status >= 300 && status < 400 && to.isValid() && !to.isRelative()) {
+                // Never from https to http (as Qt's NoLessSafeRedirectPolicy), at most 5 hops.
+                const bool lessSafe = up->url().scheme() == QLatin1String("https") && to.scheme() != QLatin1String("https");
+                if (hops < 5 && !lessSafe && (to.scheme() == QLatin1String("http") || to.scheme() == QLatin1String("https"))) {
+                    pipe(sock, token, to.toString(), method, headers, hops + 1);
+                    return;
+                }
+                qWarning().noquote() << "Cast: not following the provider's redirect"
+                                     << (lessSafe ? "from https to http" : hops >= 5 ? "(too many)" : "(not a web address)");
+                reply(sock, 502, "text/plain", "provider error");
+                return;
+            }
             qWarning().noquote() << "Cast: the provider answered" << (status ? QString::number(status) : up->errorString());
             reply(sock, 502, "text/plain", "provider error");
             return;
