@@ -3,6 +3,25 @@
 Each version's section here becomes the text of its release on GitHub, and Relay shows it
 under **What's new** when it offers the update. Write it for the people using Relay.
 
+## 0.5.4
+
+- **Starts faster:** Relay opens on the channel list it saved last time and fetches the new one
+  in the background, so a big playlist no longer keeps you waiting at every start. A new list
+  with the same channels changes nothing on screen. This works for playlists with an Xtream
+  Codes login or a get.php link, and the saved list never holds your password.
+- **Trakt works with new Trakt apps:** Trakt no longer gives new apps a Client Secret, so Relay
+  signs in with the Client ID alone, and Settings → Trakt says where to make the app
+  (developer.trakt.tv). If Relay was signed in to Trakt before Trakt's changes, sign in again
+  once.
+- **Full screen button for movies and series:** their controls have one now, like live TV's.
+- **Movies & series with several playlists:** putting their catalogues together no longer freezes
+  Relay for several seconds. Your own playlist's titles show at once, and the others join a
+  moment later.
+- **Channel numbers of 10,000 and up** fit in the channel banner.
+- **Leaving a movie or an episode** opens its page again.
+- Big playlists load with about half the memory, and Relay's log hides usernames as well as
+  passwords, so it's safer to share.
+
 ## 0.5.3
 
 - **Sound and subtitle languages:** Settings → Playback & recording has a sound language

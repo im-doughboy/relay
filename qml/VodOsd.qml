@@ -13,6 +13,7 @@ Item {
     id: root
     property var video
     property bool shown: false
+    property bool fullscreen: false   // the window is full screen (set by Main)
     property string seekHint      // "+1 min 20 s" while seeking
     property int seekTotal: 0
     signal nextRequested()
@@ -22,6 +23,7 @@ Item {
     signal castRequested()
     signal multiViewRequested()
     signal sourceRequested()
+    signal fullscreenRequested()
 
     readonly property bool catchup: Player.vod.kind === "catchup"
     property real pendingPos: -1          // catch-up seek waiting to be sent
@@ -312,6 +314,7 @@ Item {
                     // Width with the long names (the short ones are used when it doesn't fit).
                     readonly property real fullWidth: {
                         let w = multiViewButton.width + castButton.width + 2 * spacing
+                              + (fullscreenButton.visible ? fullscreenButton.width + spacing : 0)
                         for (let i = 0; i < buttonsRepeater.count; ++i) {
                             const b = buttonsRepeater.itemAt(i)
                             if (b) w += b.longWidth + (i > 0 ? spacing : 0)
@@ -369,6 +372,16 @@ Item {
                         shortcut: Keymap.label("cast"); showLabel: false
                         active: Cast.active
                         onClicked: root.castRequested()
+                    }
+                    // And full screen, as on live TV (a TV is always full screen).
+                    BarButton {
+                        id: fullscreenButton
+                        visible: !Settings.tv
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon: root.fullscreen ? Icons.exitFullscreen : Icons.fullscreen
+                        label: root.fullscreen ? qsTr("Leave full screen") : qsTr("Full screen")
+                        shortcut: Keymap.label("fullscreen"); showLabel: false
+                        onClicked: { root.fullscreenRequested(); root.show() }
                     }
                 }
             }

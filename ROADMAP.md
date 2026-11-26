@@ -43,13 +43,14 @@ Done when:
 
 | Feature | What it does |
 | --- | --- |
-| Switch to a working copy | When a channel dies, move to the same channel in another quality (FHD, HD, SD) or another playlist, and say so. **Other versions** to switch or link copies by hand. |
+| Switch to a working copy | When a channel dies, move to the same channel in another quality (FHD, HD, SD) or another playlist, and say so. **Other versions** to switch or link copies by hand. Movies and episodes too: when one stops with an error, carry on from the same point on another source, trying another provider's first (the same provider's limits stop its copies too), each source once, then offer the list. |
 | Logs without logins | Mask usernames, passwords, tokens, server names and the user's account name in `relay.log`. |
 | Report a problem | Save the masked log with version, system and a few settings, and open a filled-in GitHub issue. On the TV through the phone page. |
 | Encrypted backups | Lock `.relaybackup` files with a passphrase (AES-256-GCM). |
 | Subscription warning | A reminder 3 days before an Xtream account ends. |
 
-Done when: a dead channel with other copies moves to one within 10 seconds with a notice; a real
+Done when: a dead channel with other copies moves to one within 10 seconds with a notice; a movie
+or episode that stops carries on from the same point on another playlist's copy; a real
 session's log has no login, server name or user name; a backup can't be opened without its
 passphrase.
 
@@ -99,7 +100,8 @@ tests passing, and adds tests for what it brings.
 
 ## Open questions
 
-- 0.7: should failover reach across playlists (a second provider connection) or stay inside one?
+- 0.7 (decided): failover reaches across playlists. A provider that cuts a stream for its
+  connection limit cuts its other copies too, so another playlist is often the only copy that works.
 - 0.9: which open guide and logo sources are reliable enough, and what if one disappears?
 - 1.0: which languages first? Does the TV version ship at 1.0 or as a beta first?
 - Later: is a small Relay-run service acceptable for movie details without a token?

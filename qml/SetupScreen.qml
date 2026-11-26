@@ -1061,7 +1061,7 @@ FocusScope {
                           ? (Trakt.user.length ? qsTr("Trakt: signed in as %1.").arg(Trakt.user) : qsTr("Trakt: signed in."))
                             + " " + qsTr("Movies and episodes you watch are added to your Trakt history, and what you've watched on Trakt shows as watched here.")
                             + (Trakt.lastSync.length ? " " + qsTr("Last synced %1.").arg(Trakt.lastSync) : "")
-                          : qsTr("Trakt: off. Keep your Trakt history up to date and see what you've watched on Trakt. You'll need your own Trakt app: trakt.tv → Settings → Your API Apps → New application, name it Relay, and use urn:ietf:wg:oauth:2.0:oob as the redirect URI.")
+                          : qsTr("Trakt: off. Keep your Trakt history up to date and see what you've watched on Trakt. You'll need your own Trakt app, which is free: on developer.trakt.tv choose Create an App and name it Relay (Trakt asks you to connect a GitHub account first). Then enter its Client ID below. New Trakt apps have no Client Secret: leave that empty unless your app has one.")
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSmall
                 }
@@ -1074,19 +1074,20 @@ FocusScope {
                         label: qsTr("Client ID")
                         text: Trakt.clientId
                         KeyNavigation.tab: traktSecret.field
+                        onAccepted: { Trakt.signIn(traktId.text, traktSecret.text); traktSecret.text = "" }
                     }
                     FieldInput {
                         id: traktSecret
                         width: Math.min((card.width - 140) / 2, 300)
-                        label: qsTr("Client Secret")
-                        placeholder: Trakt.configured ? qsTr("Saved") : ""
+                        label: qsTr("Client Secret (older apps)")
+                        placeholder: Trakt.hasSecret ? qsTr("Saved") : qsTr("None")
                         echoMode: TextInput.Password
-                        onAccepted: Trakt.signIn(traktId.text, traktSecret.text)
+                        onAccepted: { Trakt.signIn(traktId.text, traktSecret.text); traktSecret.text = "" }
                     }
                     ActionButton {
                         anchors.bottom: parent.bottom
                         text: qsTr("Sign in")
-                        enabled: traktId.text.trim().length > 0 && (traktSecret.text.trim().length > 0 || Trakt.configured)
+                        enabled: traktId.text.trim().length > 0
                         onClicked: { Trakt.signIn(traktId.text, traktSecret.text); traktSecret.text = "" }
                     }
                 }

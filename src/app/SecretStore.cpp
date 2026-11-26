@@ -1,5 +1,6 @@
 #include "SecretStore.h"
 
+#include <QCoreApplication>
 #include <QtGlobal>
 
 #if defined(Q_OS_WIN)
@@ -12,7 +13,15 @@
 #endif
 
 namespace {
-QString target(const QString &name) { return QStringLiteral("Relay/") + name; }
+// Whose secrets: the running program's name, "Relay" for Relay itself.
+// The tests run as "RelayTests", so a test run never writes over (or
+// deletes) the logins of a Relay installed on the same computer.
+[[maybe_unused]] QString owner()
+{
+    const QString app = QCoreApplication::applicationName();
+    return app.isEmpty() ? QStringLiteral("Relay") : app;
+}
+[[maybe_unused]] QString target(const QString &name) { return owner() + QLatin1Char('/') + name; }
 }
 
 namespace SecretStore {
@@ -66,7 +75,7 @@ CFMutableDictionaryRef query(const QString &name)
 {
     CFMutableDictionaryRef q = CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks,
                                                          &kCFTypeDictionaryValueCallBacks);
-    CFStringRef service = cfString(QStringLiteral("Relay"));
+    CFStringRef service = cfString(owner());
     CFStringRef account = cfString(name);
     CFDictionarySetValue(q, kSecClass, kSecClassGenericPassword);
     CFDictionarySetValue(q, kSecAttrService, service);

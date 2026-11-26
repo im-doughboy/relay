@@ -152,7 +152,8 @@ Item {
         BarButton { icon: Icons.cast; label: bar.casting ? qsTr("Casting · stop or move it") : qsTr("Cast to a TV or Chromecast"); shortcut: Keymap.label("cast"); showLabel: false; active: bar.casting; onClicked: bar.castClicked() }
         BarButton { icon: Icons.pip; label: bar.pipOn ? qsTr("Close picture-in-picture") : qsTr("Picture-in-picture"); shortcut: Keymap.label("pip"); showLabel: false; active: bar.pipOn; onClicked: bar.pipClicked() }
         BarButton { icon: bar.muted ? Icons.muted : Icons.volume; label: bar.muted ? qsTr("Sound on") : qsTr("Mute (scroll for volume)"); shortcut: Keymap.label("mute"); showLabel: false; active: bar.muted; onClicked: bar.muteClicked() }
-        BarButton { icon: bar.fullscreen ? Icons.exitFullscreen : Icons.fullscreen; label: bar.fullscreen ? qsTr("Leave full screen") : qsTr("Full screen"); shortcut: Keymap.label("fullscreen"); showLabel: false; onClicked: bar.fullscreenClicked() }
+        // A TV is always full screen.
+        BarButton { visible: !Settings.tv; icon: bar.fullscreen ? Icons.exitFullscreen : Icons.fullscreen; label: bar.fullscreen ? qsTr("Leave full screen") : qsTr("Full screen"); shortcut: Keymap.label("fullscreen"); showLabel: false; onClicked: bar.fullscreenClicked() }
         Item { width: 8; height: 1 }
         BarButton { icon: Icons.settings; label: qsTr("Settings"); shortcut: Keymap.label("settings"); showLabel: false; onClicked: bar.settingsClicked() }
         BarButton { icon: Icons.help; label: qsTr("Keyboard shortcuts"); shortcut: Keymap.label("help"); showLabel: false; onClicked: bar.helpClicked() }

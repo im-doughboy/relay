@@ -15,7 +15,6 @@
 #include <QtDebug>
 
 namespace {
-const char kRedirect[] = "urn:ietf:wg:oauth:2.0:oob";
 constexpr int kSyncHours = 6;
 
 QString fold(const QString &s)
@@ -100,6 +99,14 @@ QNetworkReply *TraktService::call(const QByteArray &verb, const QString &path, c
     return m_net->sendCustomRequest(req, verb, data);
 }
 
+QJsonObject TraktService::withSecret(QJsonObject body) const
+{
+    // Trakt apps made since its 2026 changes have no secret, and Trakt asks
+    // desktop apps not to send one; an older app's secret still goes along.
+    if (!m_secret.isEmpty()) body.insert(QStringLiteral("client_secret"), m_secret);
+    return body;
+}
+
 void TraktService::api(const QByteArray &verb, const QString &path, const QJsonObject &body,
                        std::function<void(int, const QByteArray &)> done, bool retried)
 {
@@ -132,9 +139,14 @@ void TraktService::api(const QByteArray &verb, const QString &path, const QJsonO
 void TraktService::signIn(const QString &clientIdIn, const QString &secretIn)
 {
     const QString clientId = clientIdIn.trimmed(), secret = secretIn.trimmed();
-    if (!clientId.isEmpty()) m_clientId = clientId;
-    if (!secret.isEmpty()) m_secret = secret;
-    if (!configured()) { setStatus(tr("Enter your Trakt app's Client ID and Client Secret.")); return; }
+    if (!clientId.isEmpty() && clientId != m_clientId) {
+        // Another app: only the secret entered with it (new apps have none).
+        m_clientId = clientId;
+        m_secret = secret;
+    } else if (!secret.isEmpty()) {
+        m_secret = secret;
+    }
+    if (!configured()) { setStatus(tr("Enter your Trakt app's Client ID.")); return; }
     QSettings().setValue(QStringLiteral("trakt/clientId"), m_clientId);
     saveTokens();   // keeps the secret
     m_userCode.clear();
@@ -177,7 +189,7 @@ void TraktService::poll()
         return;
     }
     QNetworkReply *reply = call("POST", QStringLiteral("/oauth/device/token"),
-                                {{"code", m_deviceCode}, {"client_id", m_clientId}, {"client_secret", m_secret}}, false);
+                                withSecret({{"code", m_deviceCode}, {"client_id", m_clientId}}), false);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         reply->deleteLater();
         if (m_deviceCode.isEmpty()) return;   // cancelled meanwhile
@@ -197,7 +209,11 @@ void TraktService::poll()
         case 400: break;                                       // not entered yet
         case 429: m_interval += 2; break;                      // asking too often
         case 418: cancelSignIn(); setStatus(tr("Signing in was refused on Trakt.")); return;
-        case 401: cancelSignIn(); setStatus(tr("Trakt didn't accept the Client Secret.")); return;
+        case 401:
+            cancelSignIn();
+            setStatus(m_secret.isEmpty() ? tr("Trakt didn't accept this Client ID.")
+                                         : tr("Trakt didn't accept the Client Secret. New Trakt apps have none: leave it empty."));
+            return;
         case 404: case 409: case 410:
             cancelSignIn(); setStatus(tr("The code ran out. Start again.")); return;
         default: break;                                        // try again
@@ -220,20 +236,25 @@ void TraktService::tokensFrom(const QJsonObject &o)
 void TraktService::refreshTokens(std::function<void(bool)> done)
 {
     if (m_refresh.isEmpty()) { done(false); return; }
+    // Refresh tokens are single-use: tokensFrom() keeps the new pair.
     QNetworkReply *reply = call("POST", QStringLiteral("/oauth/token"),
-                                {{"refresh_token", m_refresh}, {"client_id", m_clientId}, {"client_secret", m_secret},
-                                 {"redirect_uri", QLatin1String(kRedirect)}, {"grant_type", "refresh_token"}}, false);
+                                withSecret({{"refresh_token", m_refresh}, {"client_id", m_clientId},
+                                            {"grant_type", "refresh_token"}}), false);
     connect(reply, &QNetworkReply::finished, this, [this, reply, done] {
         reply->deleteLater();
         const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
         if (http == 200) {
-            tokensFrom(QJsonDocument::fromJson(reply->readAll()).object());
+            tokensFrom(QJsonDocument::fromJson(body).object());
             done(true);
             return;
         }
         if (http == 400 || http == 401) {
-            // The sign-in was withdrawn on Trakt.
-            qWarning().noquote() << "Trakt: the sign-in is no longer valid";
+            // The sign-in was withdrawn on Trakt, or is from before Trakt's
+            // 2026 changes, whose refresh tokens it no longer takes ("session
+            // not found"): either way, signing in again is the answer.
+            const QString why = QJsonDocument::fromJson(body).object().value(QLatin1String("error_description")).toString();
+            qWarning().noquote() << "Trakt: the sign-in is no longer valid" << (why.isEmpty() ? QString() : QStringLiteral("(%1)").arg(why));
             clearTokens();
             emit message(tr("Trakt signed Relay out · sign in again in Settings"));
         }
@@ -292,7 +313,7 @@ void TraktService::signOut()
     cancelSignIn();
     if (!m_access.isEmpty()) {
         QNetworkReply *reply = call("POST", QStringLiteral("/oauth/revoke"),
-                                    {{"token", m_access}, {"client_id", m_clientId}, {"client_secret", m_secret}}, false);
+                                    withSecret({{"token", m_access}, {"client_id", m_clientId}}), false);
         connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
     }
     clearTokens();

@@ -861,6 +861,8 @@ Window {
         // Multi-view is live channels: the movie keeps its place, and live TV opens in tiles.
         onMultiViewRequested: win.multiViewFromVod()
         onSourceRequested: win.chooseSource(qsTr("Play from"), -1)
+        fullscreen: win.visibility === Window.FullScreen
+        onFullscreenRequested: win.toggleFullscreen()
     }
 
     // Live TV's player controls (bottom; appear with the mouse or after a skip).
@@ -1318,6 +1320,12 @@ Window {
         const list = Vod.sources(Player.vod.detailsKind, Player.vod.detailsId)
         if (list.length < 2) return
         vodSourcePicker.open(list, heading, failed >= 0 ? -1 : Player.vod.sourceIndex, failed)
+    }
+    // Gone with the movie or episode it was for (it stayed on screen, out of
+    // the remote's reach, after the movie closed underneath it).
+    Connections {
+        target: Player
+        function onVodChanged() { if (!Player.vodActive) vodSourcePicker.close() }
     }
     SourcePicker {
         id: vodSourcePicker

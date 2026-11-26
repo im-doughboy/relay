@@ -15,17 +15,20 @@ class QNetworkReply;
 // Trakt (trakt.tv): what's watched in Relay goes to the user's Trakt
 // history, and what's marked watched on Trakt shows as watched in Relay.
 //
-// Needs the user's own Trakt app (trakt.tv/oauth/applications: name
-// "Relay", redirect URI urn:ietf:wg:oauth:2.0:oob): its Client ID and
-// Client Secret. Signing in uses Trakt's device codes: Relay shows a short
-// code, the user enters it at trakt.tv/activate.
+// Needs the user's own Trakt app (developer.trakt.tv → Create an App, named
+// "Relay"): its Client ID. Apps made since Trakt's 2026 changes have no
+// Client Secret (Trakt asks desktop apps not to send one); an older app's
+// secret is still sent if the user enters it. Signing in uses Trakt's
+// device codes: Relay shows a short code, the user enters it at
+// trakt.tv/activate.
 //
 // The secret and the sign-in are kept in the system credential store where
 // there is one.
 class TraktService : public QObject
 {
     Q_OBJECT
-    Q_PROPERTY(bool configured READ configured NOTIFY changed)       // Client ID and Secret entered
+    Q_PROPERTY(bool configured READ configured NOTIFY changed)       // Client ID entered
+    Q_PROPERTY(bool hasSecret READ hasSecret NOTIFY changed)         // an older app's Client Secret saved
     Q_PROPERTY(bool connected READ connected NOTIFY changed)         // signed in
     Q_PROPERTY(QString user READ user NOTIFY changed)
     Q_PROPERTY(QString clientId READ clientId NOTIFY changed)
@@ -39,7 +42,8 @@ class TraktService : public QObject
 public:
     explicit TraktService(QObject *parent = nullptr);
 
-    bool configured() const { return !m_clientId.isEmpty() && !m_secret.isEmpty(); }
+    bool configured() const { return !m_clientId.isEmpty(); }
+    bool hasSecret() const { return !m_secret.isEmpty(); }
     bool connected() const { return !m_access.isEmpty(); }
     QString user() const { return m_user; }
     QString clientId() const { return m_clientId; }
@@ -50,7 +54,8 @@ public:
     void setScrobbleOn(bool on);
     QString lastSync() const;
 
-    // Saves the app's Client ID and Secret, and starts signing in.
+    // Saves the app's Client ID (and Client Secret, for an older app that
+    // has one), and starts signing in. A new Client ID drops the old secret.
     Q_INVOKABLE void signIn(const QString &clientId, const QString &secret);
     Q_INVOKABLE void cancelSignIn();
     Q_INVOKABLE void signOut();
@@ -80,6 +85,8 @@ signals:
 
 private:
     QNetworkReply *call(const QByteArray &verb, const QString &path, const QJsonObject &body = {}, bool auth = true);
+    // A sign-in request's body with the client_secret added, only when there is one.
+    QJsonObject withSecret(QJsonObject body) const;
     // An authorised call; refreshes the sign-in once on 401.
     void api(const QByteArray &verb, const QString &path, const QJsonObject &body,
              std::function<void(int http, const QByteArray &)> done, bool retried = false);

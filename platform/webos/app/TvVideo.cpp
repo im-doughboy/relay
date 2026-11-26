@@ -216,6 +216,14 @@ void TvVideo::onPlaying()
 
 void TvVideo::onEnded()
 {
+    // The TV's player also reports the end of a stream that had already
+    // failed (30 s after a provider's 509, say). That isn't the movie
+    // finishing: taken as one, it was saved as watched and left the movie
+    // while Relay was offering other sources.
+    if (!m_playing) {
+        qInfo().noquote() << "TV player: ignoring the end of a stream that had already stopped";
+        return;
+    }
     if (m_vod) {
         qInfo().noquote() << "TV player: the movie or episode finished";
         setPlaying(false);

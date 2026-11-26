@@ -60,6 +60,8 @@
 #include <QRandomGenerator>
 #include <QStandardPaths>
 
+#include <memory>
+
 // Tiny HTTP server for recording tests: /live.ts streams 64 KB chunks every
 // 50 ms and never ends; /hls.m3u8 is a live playlist whose segments are
 // /seg<N>.ts with 1000 bytes each.
@@ -165,6 +167,68 @@ static QByteArray js(const char *text)
     b.replace('\'', '"');
     return b;
 }
+
+// Stand-in for Trakt: device sign-in, token refresh and sign-out, keeping
+// each request's path and JSON body. /users/settings turns the first call
+// away (401), so Relay has to refresh its sign-in once.
+class TraktServer : public QTcpServer
+{
+public:
+    QList<QPair<QByteArray, QJsonObject>> requests;
+    bool turnAwayOnce = true;
+    TraktServer() { listen(QHostAddress::LocalHost); }
+    QString base() const { return QStringLiteral("http://127.0.0.1:%1").arg(serverPort()); }
+    QJsonObject last(const QByteArray &path) const
+    {
+        for (qsizetype i = requests.size() - 1; i >= 0; --i)
+            if (requests[i].first == path) return requests[i].second;
+        return {};
+    }
+    bool asked(const QByteArray &path) const
+    {
+        for (const auto &r : requests) if (r.first == path) return true;
+        return false;
+    }
+protected:
+    void incomingConnection(qintptr fd) override
+    {
+        auto *sock = new QTcpSocket(this);
+        sock->setSocketDescriptor(fd);
+        connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+        auto buffer = std::make_shared<QByteArray>();
+        connect(sock, &QTcpSocket::readyRead, sock, [this, sock, buffer] {
+            buffer->append(sock->readAll());
+            const qsizetype end = buffer->indexOf("\r\n\r\n");
+            if (end < 0) return;
+            qsizetype length = 0;
+            for (const QByteArray &line : buffer->left(end).split('\n'))
+                if (line.toLower().startsWith("content-length:")) length = line.mid(15).trimmed().toLongLong();
+            if (buffer->size() < end + 4 + length) return;   // the body is still on its way
+            const QByteArray path = buffer->left(end).split(' ').value(1);
+            requests << qMakePair(path, QJsonDocument::fromJson(buffer->mid(end + 4, length)).object());
+            buffer->clear();
+            const qint64 now = QDateTime::currentSecsSinceEpoch();
+            auto tokens = [now](const char *access, const char *refresh) {
+                return QJsonDocument(QJsonObject{{"access_token", access}, {"refresh_token", refresh},
+                                                 {"expires_in", 604800}, {"created_at", now}}).toJson();
+            };
+            QByteArray status = "200 OK", reply = "[]";
+            if (path == "/oauth/device/code")
+                reply = js("{'device_code':'dev1','user_code':'ABCD1234','verification_url':'https://trakt.tv/activate',"
+                           "'expires_in':600,'interval':1}");
+            else if (path == "/oauth/device/token") reply = tokens("a1", "r1");
+            else if (path == "/oauth/token") reply = tokens("a2", "r2");
+            else if (path == "/oauth/revoke") reply = "";
+            else if (path == "/users/settings") {
+                if (turnAwayOnce) { turnAwayOnce = false; status = "401 Unauthorized"; reply = "{}"; }
+                else reply = js("{'user':{'username':'viewer'}}");
+            }
+            sock->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: "
+                        + QByteArray::number(reply.size()) + "\r\nConnection: close\r\n\r\n" + reply);
+            sock->disconnectFromHost();
+        });
+    }
+};
 
 class TestSources : public QObject
 {
@@ -2875,6 +2939,59 @@ private slots:
         QCOMPARE(eps[2].toMap().value("episode").toInt(), 5);
         QCOMPARE(TraktService::titleKey(QStringLiteral("|EN| Arrival 2016 FHD")), QStringLiteral("arrival"));
         QCOMPARE(VodService::matchKey(QStringLiteral("EN - Harbor Lights [4K]")), QStringLiteral("harborlights"));
+    }
+
+    void trakt_sign_in_without_secret()
+    {
+        // Trakt apps made since its 2026 changes have no Client Secret:
+        // signing in, refreshing and signing out send none, and no redirect
+        // address. An older app's secret still goes along.
+        TraktServer trakt;
+        qputenv("RELAY_TRAKT_URL", trakt.base().toUtf8());
+        QSettings().remove("trakt");
+        {
+            TraktService t;
+            QVERIFY(!t.configured());
+            t.signIn(QStringLiteral("client-1"), QString());
+            QVERIFY(t.configured());
+            QVERIFY(!t.hasSecret());
+            QTRY_VERIFY(t.connected());
+            QCOMPARE(trakt.last("/oauth/device/code").value("client_id").toString(), QStringLiteral("client-1"));
+            const QJsonObject device = trakt.last("/oauth/device/token");
+            QCOMPARE(device.value("code").toString(), QStringLiteral("dev1"));
+            QCOMPARE(device.value("client_id").toString(), QStringLiteral("client-1"));
+            QVERIFY(!device.contains("client_secret"));
+
+            // The first call after signing in is turned away: Relay refreshes once and carries on.
+            QTRY_COMPARE(t.user(), QStringLiteral("viewer"));
+            const QJsonObject refresh = trakt.last("/oauth/token");
+            QCOMPARE(refresh.value("grant_type").toString(), QStringLiteral("refresh_token"));
+            QCOMPARE(refresh.value("refresh_token").toString(), QStringLiteral("r1"));
+            QCOMPARE(refresh.value("client_id").toString(), QStringLiteral("client-1"));
+            QVERIFY(!refresh.contains("client_secret"));
+            QVERIFY(!refresh.contains("redirect_uri"));
+
+            t.signOut();
+            QVERIFY(!t.connected());
+            QTRY_VERIFY(trakt.asked("/oauth/revoke"));
+            QCOMPARE(trakt.last("/oauth/revoke").value("token").toString(), QStringLiteral("a2"));   // the refreshed one
+            QVERIFY(!trakt.last("/oauth/revoke").contains("client_secret"));
+
+            // An older app with a secret: it's sent. Another app's Client ID drops it.
+            t.signIn(QStringLiteral("client-2"), QStringLiteral("older-secret"));
+            QVERIFY(t.hasSecret());
+            QTRY_VERIFY(t.connected());
+            QCOMPARE(trakt.last("/oauth/device/token").value("client_secret").toString(), QStringLiteral("older-secret"));
+            t.signOut();
+            t.signIn(QStringLiteral("client-3"), QString());
+            QVERIFY(!t.hasSecret());
+            QTRY_VERIFY(t.connected());
+            QCOMPARE(trakt.last("/oauth/device/token").value("client_id").toString(), QStringLiteral("client-3"));
+            QVERIFY(!trakt.last("/oauth/device/token").contains("client_secret"));
+            t.signOut();
+        }
+        QSettings().remove("trakt");
+        qunsetenv("RELAY_TRAKT_URL");
     }
 
     void series_recording()
