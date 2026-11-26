@@ -374,10 +374,12 @@ void TraktService::scrobble(const QString &action, const QVariantMap &d, double 
     const QString kind = d.value(QStringLiteral("kind")).toString();
     if (kind != QLatin1String("movie") && kind != QLatin1String("episode")) return;
     const QString key = d.value(QStringLiteral("key")).toString();
-    if (action == QLatin1String("start")) m_scrobbling = key;
-    else if (action == QLatin1String("stop") && m_scrobbling != key && progress < 80) return;   // never started
+    if (action == QLatin1String("start")) { m_scrobbling = key; m_stopped.clear(); }
+    // Not started, or stopped already (a movie that finishes is also left):
+    // a stop of 80% or more adds to the history, so only once.
+    else if (action == QLatin1String("stop") && m_scrobbling != key && (progress < 80 || m_stopped == key)) return;
     else if (action == QLatin1String("pause") && m_scrobbling != key) return;
-    if (action == QLatin1String("stop")) m_scrobbling.clear();
+    if (action == QLatin1String("stop")) { m_scrobbling.clear(); m_stopped = key; }
     const double pct = qBound(0.0, progress, 100.0);
     identify(d, [=](const QJsonObject &what) {
         if (what.isEmpty()) return;

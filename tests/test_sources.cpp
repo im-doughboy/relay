@@ -219,6 +219,8 @@ protected:
             else if (path == "/oauth/device/token") reply = tokens("a1", "r1");
             else if (path == "/oauth/token") reply = tokens("a2", "r2");
             else if (path == "/oauth/revoke") reply = "";
+            else if (path.startsWith("/search/movie?")) reply = js("[{'movie':{'title':'Harbor Lights','ids':{'trakt':7}}}]");
+            else if (path.startsWith("/scrobble/")) status = "201 Created";
             else if (path == "/users/settings") {
                 if (turnAwayOnce) { turnAwayOnce = false; status = "401 Unauthorized"; reply = "{}"; }
                 else reply = js("{'user':{'username':'viewer'}}");
@@ -3080,6 +3082,39 @@ private slots:
             QTRY_VERIFY(t.connected());
             QCOMPARE(trakt.last("/oauth/device/token").value("client_id").toString(), QStringLiteral("client-3"));
             QVERIFY(!trakt.last("/oauth/device/token").contains("client_secret"));
+            t.signOut();
+        }
+        QSettings().remove("trakt");
+        qunsetenv("RELAY_TRAKT_URL");
+    }
+
+    // Trakt hears "start" when a movie starts and "stop" once when it's left
+    // or finished, however often it's asked: a stop of 80% or more adds a play.
+    void trakt_scrobbles_once()
+    {
+        TraktServer trakt;
+        trakt.turnAwayOnce = false;
+        qputenv("RELAY_TRAKT_URL", trakt.base().toUtf8());
+        QSettings().remove("trakt");
+        {
+            TraktService t;
+            t.signIn(QStringLiteral("client-1"), QString());
+            QTRY_VERIFY(t.connected());
+            const QVariantMap movie{{"kind", "movie"}, {"title", "Harbor Lights"}, {"year", "2024"}, {"key", "m1"}};
+            auto count = [&](const QByteArray &path) { int n = 0; for (const auto &r : trakt.requests) n += r.first == path; return n; };
+            t.scrobble(QStringLiteral("stop"), movie, 40);    // never started: nothing
+            t.scrobble(QStringLiteral("start"), movie, 41);
+            QTRY_COMPARE(count("/scrobble/start"), 1);
+            t.scrobble(QStringLiteral("stop"), movie, 100);   // it finished
+            t.scrobble(QStringLiteral("stop"), movie, 100);   // and was left
+            t.scrobble(QStringLiteral("stop"), movie, 90);
+            QTRY_COMPARE(count("/scrobble/stop"), 1);
+            QTest::qWait(300);
+            QCOMPARE(count("/scrobble/stop"), 1);
+            QCOMPARE(trakt.last("/scrobble/stop").value("progress").toDouble(), 100.0);
+            t.scrobble(QStringLiteral("start"), movie, 0);    // watched again
+            t.scrobble(QStringLiteral("stop"), movie, 95);
+            QTRY_COMPARE(count("/scrobble/stop"), 2);
             t.signOut();
         }
         QSettings().remove("trakt");

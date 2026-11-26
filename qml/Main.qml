@@ -190,14 +190,17 @@ Window {
     }
     // A movie or episode playing on the TV instead of here.
     property bool vodOnTv: false
-    function saveVodProgress() {
+    // Where a movie or episode got to. Leaving it also tells Trakt it stopped;
+    // the 10-second saves while it plays don't (`stopped` false): each one
+    // ended Trakt's "watching now" and, from 80% on, was sent again.
+    function saveVodProgress(stopped) {
         if (Player.vodActive && win.vodOnTv && Cast.active && Cast.position > 0 && Cast.duration > 0) {
             Vod.saveProgress(Player.vod, Cast.position, Cast.duration)
             return
         }
         if (Player.vodActive && video.vod && video.position > 0) {
             Vod.saveProgress(Player.vod, video.position, video.duration)
-            Trakt.scrobble("stop", Player.vod, win.vodPercent())
+            if (stopped !== false) Trakt.scrobble("stop", Player.vod, win.vodPercent())
         }
     }
     // After a movie or episode: what's queued, else the next episode.
@@ -304,7 +307,7 @@ Window {
         interval: 10000
         repeat: true
         running: Player.vodActive && video.playing
-        onTriggered: win.saveVodProgress()
+        onTriggered: win.saveVodProgress(false)
     }
 
     // ---- Casting -------------------------------------------------------------

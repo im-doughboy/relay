@@ -112,4 +112,5 @@ private:
     bool m_scrobble = true;
     QHash<QString, QJsonObject> m_ids;          // "movie|title|year" / "show|title|year" -> ids
     QString m_scrobbling;                       // key of what's being scrobbled now
+    QString m_stopped;                          // key of what was last stopped
 };

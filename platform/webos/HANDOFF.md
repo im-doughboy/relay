@@ -32,9 +32,6 @@ Fixed on the way:
   address after 10 s, twice at most.
 
 Still open:
-- Trakt gets a "stop" every 10 s while a movie plays (`saveVodProgress` in `qml/Main.qml`, shared,
-  since the first version): the first one ends "watching now" after 10 s, and from 80% on every one
-  is sent again. Seen on the TV once the time showed; offered to the owner as a fix.
 - Opening Search on the TV crashed Relay once (signal 11 in `libwayland-client`, from
   `QQuickTextInput::focusInEvent`, 26 November 15:54). It worked the time before. Not looked into.
 - One provider answered 404 for an episode its own list has: the file isn't there. Relay moved on
