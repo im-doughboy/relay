@@ -8,7 +8,13 @@
 #include <SDL2/SDL_webOS.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <QSize>
+#include <QSslConfiguration>
+#include <QSslSocket>
+#include <QTimer>
 #include <QtPlugin>
 
 #include <csignal>
@@ -81,7 +87,36 @@ void makeDir(const std::string &path)
     for (size_t i = 1; i <= path.size(); ++i)
         if (i == path.size() || path[i] == '/') mkdir(path.substr(0, i).c_str(), 0755);
 }
+
+// OpenSSL sets each part of itself up the first time it's used: its digests
+// (Qt's QCryptographicHash goes through OpenSSL in this build, image cache
+// names included), then the TV's certificates for the first secure
+// connection. Several threads doing that at once crashed Relay at startup,
+// in ossl_lib_ctx_get_data while Qt's image thread read the certificates,
+// once starting on the saved channels made the threads meet (3 starts in 9).
+// So it's all done here, on the main thread, while QCoreApplication is being
+// made: before the screens, the image thread and the network threads exist.
+void prepareOpenSsl()
+{
+    QElapsedTimer clock;
+    clock.start();
+    for (const auto method : {QCryptographicHash::Sha1, QCryptographicHash::Sha256, QCryptographicHash::Md5})
+        QCryptographicHash::hash(QByteArrayView("relay"), method);
+    const bool secure = QSslSocket::supportsSsl();
+    const qsizetype certificates = secure ? QSslConfiguration::defaultConfiguration().caCertificates().size() : 0;
+    const qint64 ms = clock.elapsed();
+    // Relay's log starts after this: report it once the event loop runs.
+    QTimer::singleShot(0, [secure, certificates, ms] {
+        if (secure)
+            qInfo().noquote() << QStringLiteral("OpenSSL: set up on the main thread in %1 ms, %2 certificates")
+                                     .arg(ms).arg(certificates);
+        else
+            qWarning().noquote() << "OpenSSL: no secure connections";
+    });
+}
 } // namespace
+
+Q_COREAPP_STARTUP_FUNCTION(prepareOpenSsl)
 
 bool tvPrepare()
 {

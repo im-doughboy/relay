@@ -5,6 +5,8 @@
 
 #include <QObject>
 
+#include <functional>
+
 class QNetworkAccessManager;
 class QNetworkReply;
 
@@ -29,6 +31,11 @@ public:
     Q_INVOKABLE void loadXtream(const QString &server, const QString &username,
                                 const QString &password, const QString &output = QStringLiteral("ts"));
     void loadPortal(const QString &server, const QString &mac);
+    // The channels saved after the last load (SavedPlaylist), for a quick
+    // start; `login` is the server's for movies and series, as a load sets
+    // it. `none` runs instead when there are none that can be used.
+    void loadSaved(const QString &path, const QByteArray &source, const QStringList &secrets,
+                   const XtreamParser::Credentials &login, std::function<void()> none);
     Q_INVOKABLE void cancel();
 
 signals:

@@ -1,12 +1,15 @@
 #include "Session.h"
 
 #include "app/AppSettings.h"
+#include "app/SecretStore.h"
 #include "app/UserLibrary.h"
 #include "record/ScheduleService.h"
 #include "epg/EpgService.h"
 #include "models/ChannelModel.h"
 #include "player/PlayerController.h"
 #include "sources/PlaylistService.h"
+#include "sources/SavedPlaylist.h"
+#include "sources/XtreamParser.h"
 #include "vod/VodService.h"
 #include "sources/CatchupService.h"
 
@@ -14,8 +17,64 @@
 #include <QFile>
 #include <QLocale>
 #include <QTimer>
+#include <QUrl>
+#include <QtConcurrent>
 
 #include <algorithm>
+#include <utility>
+
+#ifdef RELAY_WEBOS
+#include <malloc.h>
+#endif
+
+namespace {
+
+// Opened on the saved channels, Relay fetches the new list this long after,
+// once the first channel is on, unless the saved list is younger than
+// kSavedRecentSecs (a quick restart).
+constexpr int kRefreshAfterSavedMs = 10000;
+constexpr qint64 kSavedRecentSecs = 3600;
+
+// What identifies a playlist's saved channels and puts their login back.
+struct SavedSource {
+    QByteArray key;
+    QStringList secrets;                 // the password, then the username: kept out of the file
+    XtreamParser::Credentials login;     // the server's, for movies and series, as a load sets it
+};
+
+// False when the active playlist's channels aren't saved: portals, playlist
+// files (quick to read anyway), and, on a computer that keeps playlist
+// addresses in its credential store, an address without a login Relay
+// knows, since its channels' addresses may carry the same token.
+bool savedSourceFor(const AppSettings *s, SavedSource *out)
+{
+    QString description;
+    if (s->sourceType() == QLatin1String("xtream")) {
+        if (s->xtreamOutput() == QLatin1String("portal") || s->xtreamServer().trimmed().isEmpty()) return false;
+        out->login.server = s->xtreamServer();
+        out->login.username = s->xtreamUser();
+        out->login.password = s->xtreamPassword();
+        out->login.output = s->xtreamOutput();
+        description = QStringLiteral("xtream\n%1\n%2")
+                          .arg(XtreamParser::normalizeServer(out->login.server).toString(), out->login.output);
+    } else if (s->sourceType() == QLatin1String("m3u")) {
+        const QString location = s->m3uLocation().trimmed();
+        const QUrl url = QUrl::fromUserInput(location, QString(), QUrl::AssumeLocalFile);
+        if (location.isEmpty() || url.isLocalFile()) return false;
+        if (!XtreamParser::credentialsFromPlaylistUrl(url, &out->login)) {
+            if (SecretStore::available()) return false;
+            out->login = {};
+        }
+        description = QStringLiteral("m3u\n") + location;
+    } else {
+        return false;
+    }
+    out->secrets = {out->login.password, out->login.username};
+    out->key = SavedPlaylist::sourceKey(description, out->secrets);
+    return true;
+}
+
+} // namespace
 
 Session::Session(AppSettings *settings, PlaylistService *playlists, ChannelModel *channels,
                  PlayerController *player, EpgService *epg, VodService *vod, CatchupService *catchup,
@@ -34,6 +93,15 @@ Session::Session(AppSettings *settings, PlaylistService *playlists, ChannelModel
         if (m_ready) refreshGuideIfNeeded(false);
     });
     timer->start();
+
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(kRefreshAfterSavedMs);
+    connect(m_refreshTimer, &QTimer::timeout, this, [this] {
+        m_refreshingSaved = true;
+        reloadQuietly();
+        if (!m_quiet) m_refreshingSaved = false;   // couldn't start now: the automatic refresh will
+    });
     applyGuideSettings();
     connect(m_settings, &AppSettings::optionsChanged, this, &Session::applyGuideSettings);
     connect(m_settings, &AppSettings::sourceChanged, this, &Session::applyGuideSettings);
@@ -108,15 +176,12 @@ bool Session::playlistDue() const
 void Session::reloadQuietly()
 {
     if (!m_ready || m_playlists->busy() || m_pending != Pending::None) return;
+    const QString type = m_settings->sourceType();
+    if (type != QLatin1String("m3u") && type != QLatin1String("xtream")) return;
     qInfo() << "Playlist: automatic refresh";
     m_loadedAt = QDateTime::currentDateTimeUtc();   // a failed try waits for the next interval
     m_quiet = true;
-    if (m_settings->sourceType() == QLatin1String("m3u"))
-        m_playlists->loadM3u(m_settings->m3uLocation());
-    else if (m_settings->sourceType() == QLatin1String("xtream"))
-        m_playlists->loadXtream(m_settings->xtreamServer(), m_settings->xtreamUser(),
-                                m_settings->xtreamPassword(), m_settings->xtreamOutput());
-    else m_quiet = false;
+    loadFresh();
 }
 
 // The addresses typed in Settings (several allowed), then the playlist's own
@@ -190,6 +255,8 @@ void Session::setStorage(UserLibrary *library, ScheduleService *schedule, const 
 
 void Session::switchStorage(const QString &id)
 {
+    endQuietRefresh();
+    m_digest.clear();
     m_playlists->cancel();
     m_epg->cancel();
     m_player->stopVod();
@@ -235,6 +302,7 @@ void Session::switchPlaylistAndTune(const QString &id, const QString &channelKey
 void Session::addNewM3u(const QString &name, const QString &location, const QString &guideUrl)
 {
     clearError();
+    endQuietRefresh();
     m_pending = Pending::M3u;
     m_pendingNew = true;
     m_pendingName = name.trimmed().isEmpty() ? AppSettings::suggestName(location) : name.trimmed();
@@ -247,6 +315,7 @@ void Session::addNewXtream(const QString &name, const QString &server, const QSt
                            const QString &password, const QString &output, const QString &guideUrl)
 {
     clearError();
+    endQuietRefresh();
     m_pending = Pending::Xtream;
     m_pendingNew = true;
     m_pendingName = name.trimmed().isEmpty() ? AppSettings::suggestName(server) : name.trimmed();
@@ -261,6 +330,7 @@ void Session::addNewXtream(const QString &name, const QString &server, const QSt
 void Session::addM3u(const QString &location)
 {
     clearError();
+    endQuietRefresh();
     if (m_settings->activeId().isEmpty()) { addNewM3u(QString(), location, m_settings->epgOverride()); return; }
     m_pendingNew = false;
     m_pending = Pending::M3u;
@@ -272,6 +342,7 @@ void Session::addXtream(const QString &server, const QString &user,
                         const QString &password, const QString &output)
 {
     clearError();
+    endQuietRefresh();
     if (m_settings->activeId().isEmpty()) { addNewXtream(QString(), server, user, password, output, QString()); return; }
     m_pendingNew = false;
     m_pending = Pending::Xtream;
@@ -288,12 +359,66 @@ void Session::addXtream(const QString &server, const QString &user,
 void Session::reload()
 {
     clearError();
+    endQuietRefresh();
     m_pending = Pending::None;
+    // Open on the channels saved after the last load; onLoaded() fetches the
+    // new list in the background.
+    const QString path = savedPath();
+    SavedSource saved;
+    if (!path.isEmpty() && QFile::exists(path) && savedSourceFor(m_settings, &saved)) {
+        m_playlists->loadSaved(path, saved.key, saved.secrets, saved.login, [this] { loadFresh(); });
+        return;
+    }
+    loadFresh();
+}
+
+void Session::loadFresh()
+{
     if (m_settings->sourceType() == QLatin1String("m3u"))
         m_playlists->loadM3u(m_settings->m3uLocation());
     else if (m_settings->sourceType() == QLatin1String("xtream"))
         m_playlists->loadXtream(m_settings->xtreamServer(), m_settings->xtreamUser(),
                                 m_settings->xtreamPassword(), m_settings->xtreamOutput());
+}
+
+void Session::endQuietRefresh()
+{
+    m_quiet = false;
+    m_refreshingSaved = false;
+    if (m_refreshTimer) m_refreshTimer->stop();
+}
+
+QString Session::savedPath() const
+{
+    const QString id = m_settings->activeId();
+    if (m_dataDir.isEmpty() || id.isEmpty()) return QString();
+    return storageDir(m_dataDir, id) + QStringLiteral("/channels.saved");
+}
+
+void Session::saveChannels(const PlaylistResult &result)
+{
+    const QString path = savedPath();
+    SavedSource saved;
+    if (path.isEmpty() || result.channels.isEmpty() || !result.portalAccount.isEmpty()
+        || !savedSourceFor(m_settings, &saved))
+        return;
+    PlaylistResult copy = result;
+    // With a login the server lists the movies and series itself (VodService).
+    if (!saved.login.username.isEmpty()) {
+        copy.vodMovies.clear();
+        copy.vodEpisodes.clear();
+    }
+    (void)QtConcurrent::run([path, copy = std::move(copy), saved]() mutable {
+        if (!SavedPlaylist::save(path, copy, saved.key, saved.secrets))
+            qWarning().noquote() << "Playlist: couldn't save the channel list for the next start";
+#ifdef RELAY_WEBOS
+        // Reading a large playlist leaves the C library holding what it used
+        // (115 MB after a 100 MB M3U): hand it back to the TV, which judges
+        // apps by what they hold.
+        copy = PlaylistResult{};
+        malloc_trim(0);
+#endif
+    });
 }
 
 void Session::removePlaylist()
@@ -306,6 +431,8 @@ void Session::removePlaylistById(const QString &id)
     if (id.isEmpty()) return;
     const bool active = id == m_settings->activeId();
     if (active) {
+        endQuietRefresh();
+        m_digest.clear();
         m_playlists->cancel();
         m_epg->cancel();
         m_channels->setPlaylist(PlaylistResult{});
@@ -341,10 +468,20 @@ void Session::setError(const QString &e)
 
 void Session::onLoaded(const PlaylistResult &result)
 {
-    m_loadedAt = QDateTime::currentDateTimeUtc();
+    // Opened on the saved channels: they count as loaded when they were saved.
+    m_loadedAt = result.savedAt.isValid() ? result.savedAt : QDateTime::currentDateTimeUtc();
     if (m_quiet) {
         // Automatic refresh: swap the channels in underneath what's playing.
         m_quiet = false;
+        m_refreshingSaved = false;
+        saveChannels(result);
+        if (!result.digest.isEmpty() && result.digest == m_digest) {
+            // The same channels: nothing on screen changes.
+            qInfo().noquote() << QStringLiteral("Playlist: refreshed, %1 channels, no changes")
+                                     .arg(result.channels.size());
+            return;
+        }
+        m_digest = result.digest;
         const QString current = m_channels->keyAt(m_player->currentIndex());
         const QString previous = m_channels->keyAt(m_player->previousIndex());
         const Channel *was = m_channels->channel(m_player->currentIndex());
@@ -398,6 +535,17 @@ void Session::onLoaded(const PlaylistResult &result)
     m_player->restoreAfterLoad();
     m_vod->setSource(result);
     refreshGuideIfNeeded(result.guideIsNew);
+
+    m_digest = result.digest;
+    if (!result.savedAt.isValid()) {   // just downloaded
+        m_refreshTimer->stop();
+        saveChannels(result);
+        return;
+    }
+    // Opened on the saved channels: the new list comes in the background.
+    const qint64 age = result.savedAt.secsTo(QDateTime::currentDateTimeUtc());
+    if (age < 0 || age >= kSavedRecentSecs) m_refreshTimer->start();
+    else qInfo().noquote() << QStringLiteral("Playlist: saved %1 minutes ago, not fetched again yet").arg(age / 60);
 }
 
 void Session::onFailed(const QString &message)
@@ -405,6 +553,10 @@ void Session::onFailed(const QString &message)
     if (m_quiet) {      // an automatic refresh that didn't work: carry on with what we have
         m_quiet = false;
         qWarning().noquote() << "Playlist: automatic refresh failed:" << message;
+        // After opening on the saved channels this is the start's own load:
+        // say so (an expired login, say), without taking the channels away.
+        if (std::exchange(m_refreshingSaved, false))
+            setError(tr("Couldn't refresh the channel list: %1").arg(message));
         return;
     }
     m_pending = Pending::None;

@@ -8,6 +8,7 @@
 #include "models/ChannelModel.h"
 #include "player/PlayerController.h"
 #include "sources/M3uParser.h"
+#include "sources/SavedPlaylist.h"
 #include "sources/XtreamParser.h"
 #include "sources/PortalClient.h"
 #include "sources/Catchup.h"
@@ -1738,6 +1739,107 @@ private slots:
         const QJsonObject tv = QJsonDocument::fromJson(R"({"content_ratings":{"results":[{"iso_3166_1":"US","rating":"TV-MA"}]}})").object();
         QCOMPARE(TmdbClient::certification(tv, true), QStringLiteral("TV-MA"));
         QVERIFY(TmdbClient::certification(QJsonObject(), true).isEmpty());
+    }
+
+    void saved_playlist()
+    {
+        // The channels saved for a quick start: no login in the file, a new
+        // password still works, another source's list or a damaged file isn't used.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("channels.saved"));
+        const QString user = QStringLiteral("viewer42"), pass = QStringLiteral("s3cretPass");
+        PlaylistResult r;
+        r.epgUrl = QStringLiteral("http://example.com:8080/xmltv.php?username=%1&password=%2").arg(user, pass);
+        r.groupOrder = {QStringLiteral("News"), QStringLiteral("Sport")};
+        r.skippedMovies = 12;
+        r.skippedSeries = 34;
+        for (int i = 1; i <= 3; ++i) {
+            Channel c;
+            c.number = i;
+            c.name = QStringLiteral("Channel %1 é").arg(i);
+            c.group = i == 3 ? QStringLiteral("Sport") : QStringLiteral("News");
+            c.logo = QStringLiteral("http://img.example.com/%1.png").arg(i);
+            c.url = QStringLiteral("http://example.com:8080/live/%1/%2/%3.ts").arg(user, pass).arg(1000 + i);
+            c.tvgId = QStringLiteral("ch%1.uk").arg(i);
+            c.tvgShiftMinutes = i * 30;
+            c.catchupType = QStringLiteral("xc");
+            c.catchupDays = i;
+            r.channels << c;
+        }
+        const QStringList secrets{pass, user};
+        const QByteArray key = SavedPlaylist::sourceKey(QStringLiteral("xtream\nhttp://example.com:8080\nts"), secrets);
+        QVERIFY(SavedPlaylist::save(path, r, key, secrets));
+
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QByteArray bytes = file.readAll();
+        file.close();
+        QVERIFY(!bytes.contains(pass.toUtf8()));
+        QVERIFY(!bytes.contains(user.toUtf8()));
+
+        PlaylistResult back;
+        QVERIFY(SavedPlaylist::read(path, key, secrets, &back));
+        QCOMPARE(back.channels.size(), 3);
+        QCOMPARE(back.channels[2].url, r.channels[2].url);
+        QCOMPARE(back.channels[2].name, r.channels[2].name);
+        QCOMPARE(back.channels[1].tvgShiftMinutes, 60);
+        QCOMPARE(back.channels[2].catchupDays, 3);
+        QCOMPARE(back.epgUrl, r.epgUrl);
+        QCOMPARE(back.groupOrder, r.groupOrder);
+        QCOMPARE(back.skippedSeries, 34);
+        QVERIFY(back.savedAt.isValid());
+        QCOMPARE(back.digest, SavedPlaylist::digest(r));   // the same channels as loaded
+
+        // A new password: the saved channels carry it.
+        PlaylistResult renewed;
+        QVERIFY(SavedPlaylist::read(path, key, {QStringLiteral("n3wPass"), user}, &renewed));
+        QCOMPARE(renewed.channels[0].url, QStringLiteral("http://example.com:8080/live/viewer42/n3wPass/1001.ts"));
+        // ...and the key doesn't change with it.
+        QCOMPARE(SavedPlaylist::sourceKey(QStringLiteral("m3u\nhttp://h/get.php?username=u1&password=p1"),
+                                          {QStringLiteral("p1"), QStringLiteral("u1")}),
+                 SavedPlaylist::sourceKey(QStringLiteral("m3u\nhttp://h/get.php?username=u1&password=p2"),
+                                          {QStringLiteral("p2"), QStringLiteral("u1")}));
+
+        // Another server's list isn't used.
+        PlaylistResult other;
+        QVERIFY(!SavedPlaylist::read(path, SavedPlaylist::sourceKey(QStringLiteral("xtream\nhttp://other.example\nts"), secrets),
+                                     secrets, &other));
+
+        // A changed channel changes the fingerprint.
+        PlaylistResult changed = r;
+        changed.channels[1].name = QStringLiteral("Renamed");
+        QVERIFY(SavedPlaylist::digest(changed) != SavedPlaylist::digest(r));
+
+        // A damaged or cut-off file isn't used, and neither is a missing one.
+        QByteArray damaged = bytes;
+        damaged[damaged.size() / 2] = char(damaged[damaged.size() / 2] ^ 0x5a);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(damaged);
+        file.close();
+        PlaylistResult broken;
+        QVERIFY(!SavedPlaylist::read(path, key, secrets, &broken));
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(bytes.left(bytes.size() - 7));
+        file.close();
+        QVERIFY(!SavedPlaylist::read(path, key, secrets, &broken));
+        QVERIFY(!SavedPlaylist::read(dir.filePath(QStringLiteral("missing")), key, secrets, &broken));
+        QVERIFY(broken.channels.isEmpty());
+
+        // A password inside the username (or the reverse) still comes back exactly.
+        PlaylistResult tricky;
+        Channel t;
+        t.url = QStringLiteral("http://h/live/abcdef/abc/7.ts");
+        tricky.channels << t;
+        const QStringList overlapping{QStringLiteral("abc"), QStringLiteral("abcdef")};
+        QVERIFY(SavedPlaylist::save(path, tricky, key, overlapping));
+        PlaylistResult trickyBack;
+        QVERIFY(SavedPlaylist::read(path, key, overlapping, &trickyBack));
+        QCOMPARE(trickyBack.channels[0].url, t.url);
+        const QStringList reversed{QStringLiteral("abcdef"), QStringLiteral("abc")};
+        QVERIFY(SavedPlaylist::save(path, tricky, key, reversed));
+        QVERIFY(SavedPlaylist::read(path, key, reversed, &trickyBack));
+        QCOMPARE(trickyBack.channels[0].url, t.url);
     }
 
     void tmdb_picture_sizes()

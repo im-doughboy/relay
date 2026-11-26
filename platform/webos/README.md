@@ -93,6 +93,12 @@ arrives as Escape and Relay's Escape leaves full screen on a computer.
   into the same process. With Relay's loaded first there is one OpenSSL, the
   newer. A static copy in Relay next to the TV's crashed inside OpenSSL, and
   so did Relay on the TV's older one.
+- OpenSSL is set up once, on the main thread, while Qt starts
+  (`app/TvPlatform.cpp`): its digests (Qt's `QCryptographicHash` goes
+  through OpenSSL here, image cache names included) and the TV's
+  certificates. When several threads did that at once on a quick start,
+  Relay crashed in `ossl_lib_ctx_get_data` (3 starts in 9); with this, none
+  in 16. It takes about 0.2 seconds.
 
 The remote. webOS gives apps the arrows, OK, Back and CH ∧/∨ only: it keeps
 GUIDE, 123, AI, ?, the gear and the dashboard button, and asking for them
@@ -129,8 +135,20 @@ Movies & series:
 - The guide and the channel list have their rows only while they're open. A
   hidden guide rebuilt its rows on every change to the channels, which also
   froze the screen for seconds.
+- After reading a playlist Relay hands the memory it used back to the TV
+  (`malloc_trim`): a 100 MB M3U otherwise left Relay 115 MB larger.
 - Relay marks itself as the first to go when memory runs out
   (`oom_score_adj`), rather than one of the TV's services.
+
+Starting. Relay saves a playlist's channels after each load
+(`src/sources/SavedPlaylist`, in the playlist's own folder) and opens on
+them at the next start, then fetches the new list in the background unless
+the saved one is less than an hour old. A new list with the same channels
+changes nothing on screen. The saved copy holds no login: the password and
+username are put back from Settings when it's read. Fetching is quicker
+with an Xtream Codes login, too: Relay then asks the server for the live
+channels only, where an M3U link brings every movie and episode as well
+(100 MB for one provider).
 
 Smoothness. The TV's processor and graphics are far slower than a
 computer's, so on the TV:

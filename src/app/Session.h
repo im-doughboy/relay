@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QObject>
 #include <QSet>
 
+class QTimer;
 class AppSettings;
 class ChannelModel;
 class PlayerController;
@@ -51,7 +53,10 @@ public:
     Q_INVOKABLE void switchPlaylist(const QString &id);
     // Switch, then tune the channel with this key once it's loaded.
     Q_INVOKABLE void switchPlaylistAndTune(const QString &id, const QString &channelKey);
-    Q_INVOKABLE void reload();          // re-download the saved playlist
+    // Open the active playlist: on the channels saved after its last load
+    // when there are some (the new list is then fetched in the background
+    // unless they're less than an hour old), else downloaded.
+    Q_INVOKABLE void reload();
     Q_INVOKABLE void removePlaylist();  // the active one
     Q_INVOKABLE void removePlaylistById(const QString &id);
     Q_INVOKABLE void clearError();
@@ -87,6 +92,10 @@ private:
     QSet<QString> chosenGuideIds() const;
     void refreshGuideIfNeeded(bool force);
     void switchStorage(const QString &id);   // empty state, other playlist's files
+    void loadFresh();                        // download the active playlist
+    void endQuietRefresh();                  // a load the user asked for replaces it
+    QString savedPath() const;               // the active playlist's saved channels
+    void saveChannels(const PlaylistResult &result);
 
     AppSettings *m_settings;
     PlaylistService *m_playlists;
@@ -107,6 +116,9 @@ private:
     QString m_lastError;
     bool m_ready = false;
     bool m_quiet = false;            // the load under way is an automatic refresh
+    QTimer *m_refreshTimer = nullptr;    // the new list, soon after opening on the saved one
+    bool m_refreshingSaved = false;  // the quiet load under way is that one
+    QByteArray m_digest;             // fingerprint of the channels shown (SavedPlaylist::digest)
     QDateTime m_loadedAt;
     QString m_summary;
 };

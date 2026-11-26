@@ -55,6 +55,7 @@ add_library(relay_core STATIC
     src/sources/M3uParser.h        src/sources/M3uParser.cpp
     src/sources/XtreamParser.h     src/sources/XtreamParser.cpp
     src/sources/PlaylistService.h  src/sources/PlaylistService.cpp
+    src/sources/SavedPlaylist.h    src/sources/SavedPlaylist.cpp
     src/sources/Catchup.h          src/sources/Catchup.cpp
     src/sources/PortalClient.h     src/sources/PortalClient.cpp
     src/sources/CatchupService.h   src/sources/CatchupService.cpp

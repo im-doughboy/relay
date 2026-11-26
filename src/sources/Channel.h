@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QByteArray>
+#include <QDateTime>
 #include <QMetaType>
 #include <QString>
 #include <QStringList>
@@ -43,6 +45,11 @@ struct PlaylistResult
     QVector<Channel> vodEpisodes;
     QString xtreamServer, xtreamUser, xtreamPassword;
     QString portalAccount;   // Stalker / MAC portal (PortalClient account): its movies come from the portal
+
+    // When these channels are the copy saved after an earlier load
+    // (SavedPlaylist): the time it was saved.
+    QDateTime savedAt;
+    QByteArray digest;       // fingerprint of the live channels (SavedPlaylist::digest)
 
     QString error;           // non-empty when loading failed
 };

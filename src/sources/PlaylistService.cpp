@@ -3,9 +3,11 @@
 
 #include "M3uParser.h"
 #include "PortalClient.h"
+#include "SavedPlaylist.h"
 #include "XtreamParser.h"
 #include "app/Log.h"
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QNetworkAccessManager>
@@ -125,6 +127,7 @@ void PlaylistService::loadM3u(const QString &location)
                 r.xtreamUser = c.username;
                 r.xtreamPassword = c.password;
             }
+            r.digest = SavedPlaylist::digest(r);
             return r;
         })
             .then(this, [this, gen](PlaylistResult r) {
@@ -203,12 +206,45 @@ void PlaylistService::loadXtream(const QString &server, const QString &username,
                     r.xtreamServer = c.server;
                     r.xtreamUser = c.username;
                     r.xtreamPassword = c.password;
+                    r.digest = SavedPlaylist::digest(r);
                     return r;
                 }).then(this, [this, gen](PlaylistResult r) {
                     if (gen == m_generation) finishWith(r);
                 });
             });
         });
+    });
+}
+
+// ---- Saved channels ---------------------------------------------------------------
+
+void PlaylistService::loadSaved(const QString &path, const QByteArray &source, const QStringList &secrets,
+                                const XtreamParser::Credentials &login, std::function<void()> none)
+{
+    begin(QStringLiteral("Opening the channel list…"));
+    const quint64 gen = m_generation;
+    QElapsedTimer clock;
+    clock.start();
+    QtConcurrent::run([path, source, secrets] {
+        PlaylistResult r;
+        SavedPlaylist::read(path, source, secrets, &r);   // leaves r empty if it can't
+        return r;
+    }).then(this, [this, gen, login, none, clock](PlaylistResult r) {
+        if (gen != m_generation) return;
+        if (!r.savedAt.isValid()) {
+            qInfo().noquote() << "Playlist: the saved channel list can't be used; downloading the playlist";
+            none();
+            return;
+        }
+        qInfo().noquote() << QStringLiteral("Playlist: opened the channel list saved %1, in %2 ms")
+                                 .arg(r.savedAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm")))
+                                 .arg(clock.elapsed());
+        if (!login.server.isEmpty() && !login.username.isEmpty()) {
+            r.xtreamServer = login.server;
+            r.xtreamUser = login.username;
+            r.xtreamPassword = login.password;
+        }
+        finishWith(r);
     });
 }
 
