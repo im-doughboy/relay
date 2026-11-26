@@ -22,7 +22,8 @@ Read this before starting any work in this repository.
 ## Rules
 
 - Commit as `git -c user.name=im-doughboy -c user.email=im-doughboy@users.noreply.github.com commit`.
-  Never put the owner's personal email address, provider logins or stream addresses in code,
+  No `Co-Authored-By`, `Claude-Session` or other AI attribution lines in commit messages or pull
+  requests. Never put the owner's personal email address, provider logins or stream addresses in code,
   commits, logs, tests or docs.
 - API tokens (TMDB, Trakt, GitHub) live only in the user's settings or the system's credential
   store, never in the code.
