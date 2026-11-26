@@ -84,7 +84,7 @@ Rectangle {
 
             Text {
                 id: number
-                width: 92
+                width: Math.max(92, implicitWidth)   // room for 4 digits; wider for 10,000 and up
                 anchors.verticalCenter: logo.verticalCenter
                 horizontalAlignment: Text.AlignRight
                 text: Player.currentNumber

@@ -33,6 +33,7 @@
 #endif
 
 #include <algorithm>
+#include <utility>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -196,7 +197,7 @@ VodService::VodService(UserLibrary *library, const QString &cacheDir, QObject *p
     m_mergeTimer->setSingleShot(true);
     m_mergeTimer->setInterval(250);
     connect(m_mergeTimer, &QTimer::timeout, this, [this] {
-        merge();
+        if (!merge()) return;   // shown when the background merge is done
         emit stateChanged();
         rebuildCategories();
         rebuild();
@@ -1094,10 +1095,10 @@ void VodService::applyCatalogue(Catalogue cat)
     m_ownSeriesFolded = std::move(cat.seriesFolded);
     m_m3uEpisodeMap = std::move(cat.m3uEpisodes);
     m_portalInfo = std::move(cat.portalInfo);
-    merge();   // with the other playlists' titles (or just these)
-    m_seriesDetails.clear();
-    m_loaded = true;
+    m_loaded = true;   // before merge(), which waits for this playlist's titles
     m_loading = false;
+    const bool listsFinal = merge();   // with the other playlists' titles (or just these)
+    m_seriesDetails.clear();
     m_status.clear();
     m_error.clear();
     qInfo().noquote() << QStringLiteral("VOD: %1 movies in %2 categories, %3 series in %4 categories%5")
@@ -1111,6 +1112,7 @@ void VodService::applyCatalogue(Catalogue cat)
         if (c.toMap().value(QStringLiteral("id")).toString() == m_category) known = true;
     if (!known) { m_category = QStringLiteral("all"); emit categoryChanged(); }
     rebuild();
+    if (!listsFinal) { m_fillAfterMerge = true; return; }
     fillPosters();
     markTraktMovies();
 }
@@ -1821,39 +1823,91 @@ void VodService::clearExtraSources()
     m_mergeTimer->start();
 }
 
-// Each title once: this playlist's first, then the others' in playlist
-// order. Titles match by name (tags like "EN -", "[4K]" left out) and year;
-// one without a year matches by name. The first one found is the title
-// (its details, its place); the rest are sources to play from.
-void VodService::merge()
+void VodService::indexTitles()
 {
-    m_sourcesOf.clear();
-    auto index = [this] {
-        m_movieIndex.clear();
-        m_seriesIndex.clear();
-        for (int i = 0; i < m_movies.size(); ++i) m_movieIndex.insert(m_movies[i].id, i);
-        for (int i = 0; i < m_series.size(); ++i) m_seriesIndex.insert(m_series[i].id, i);
-    };
-    QVector<int> loaded;
-    for (int i = 0; i < m_extras.size(); ++i) if (m_extras[i].svc->loaded()) loaded << i;
-    if (m_isExtra || !m_combine) {
+    m_movieIndex.clear();
+    m_seriesIndex.clear();
+    for (int i = 0; i < m_movies.size(); ++i) m_movieIndex.insert(m_movies[i].id, i);
+    for (int i = 0; i < m_series.size(); ++i) m_seriesIndex.insert(m_series[i].id, i);
+}
+
+bool VodService::merge()
+{
+    const quint64 gen = ++m_mergeGeneration;
+    const bool combining = !m_isExtra && m_combine;
+    if (!combining || (m_movies.isEmpty() && m_series.isEmpty())) {
+        // This playlist's own titles, at once (and until the combined ones are ready).
+        m_sourcesOf.clear();
         m_movies = m_ownMovies;
         m_series = m_ownSeries;
         m_movieCats = m_ownMovieCats;
         m_seriesCats = m_ownSeriesCats;
         m_movieFolded = m_ownMovieFolded;
         m_seriesFolded = m_ownSeriesFolded;
-        index();
-        return;
+        indexTitles();
     }
+    if (!combining) return true;
+    // Not while this playlist's own titles are still loading: they're
+    // combined when they arrive. (Showing the other playlists' titles
+    // combined first was followed by a 13-second freeze on a TV.)
+    if (m_loading && !m_loaded) return true;
 
-    int shared = 0;
+    // Combining tens of thousands of titles takes seconds on a TV: done in
+    // the background on copies, shown when it's ready.
+    QVector<MergeSource> sources;
+    sources.append(MergeSource{-1, QString(), m_ownMovies, m_ownSeries, m_ownMovieCats, m_ownSeriesCats,
+                               m_ownMovieFolded, m_ownSeriesFolded});
+    for (int i = 0; i < m_extras.size(); ++i) {
+        const VodService *svc = m_extras[i].svc;
+        if (!svc->loaded()) continue;
+        sources.append(MergeSource{i, QLatin1Char('@') + m_extras[i].playlistId + QLatin1Char(':'),
+                                   svc->m_ownMovies, svc->m_ownSeries, svc->m_ownMovieCats, svc->m_ownSeriesCats,
+                                   svc->m_ownMovieFolded, svc->m_ownSeriesFolded});
+    }
+    const int playlists = int(sources.size());
+    const quint64 load = m_generation;
+    QtConcurrent::run([sources] { return combined(sources); }).then(this, [this, gen, load, playlists](Merged m) {
+        if (gen != m_mergeGeneration || load != m_generation) return;   // something newer, or let go
+        m_movies = std::move(m.movies);
+        m_series = std::move(m.series);
+        m_movieCats = std::move(m.movieCats);
+        m_seriesCats = std::move(m.seriesCats);
+        m_movieFolded = std::move(m.movieFolded);
+        m_seriesFolded = std::move(m.seriesFolded);
+        m_sourcesOf = std::move(m.sourcesOf);
+        indexTitles();
+        // Another source's id (Continue watching from before, a favorite) finds the title.
+        for (auto it = m.movieAliases.constBegin(); it != m.movieAliases.constEnd(); ++it)
+            if (!m_movieIndex.contains(it.key())) m_movieIndex.insert(it.key(), it.value());
+        for (auto it = m.seriesAliases.constBegin(); it != m.seriesAliases.constEnd(); ++it)
+            if (!m_seriesIndex.contains(it.key())) m_seriesIndex.insert(it.key(), it.value());
+        if (playlists > 1 || m.shared > 0)
+            qInfo().noquote() << QStringLiteral("VOD: %1 movies and %2 series from %3 playlists, %4 titles on more than one source")
+                                     .arg(m_movies.size()).arg(m_series.size()).arg(playlists).arg(m.shared);
+        emit stateChanged();
+        rebuildCategories();
+        rebuild();
+        if (std::exchange(m_fillAfterMerge, false)) {
+            fillPosters();
+            markTraktMovies();
+        }
+    });
+    return false;
+}
+
+// Each title once: this playlist's first, then the others' in playlist
+// order. Titles match by name (tags like "EN -", "[4K]" left out) and year;
+// one without a year matches by name. The first one found is the title
+// (its details, its place); the rest are sources to play from.
+VodService::Merged VodService::combined(const QVector<MergeSource> &sources)
+{
+    Merged m;
+    if (sources.isEmpty()) return m;
+    const MergeSource &own = sources.first();
     auto one = [&](bool movies, QVector<VodItem> &out, QVector<VodParser::Category> &cats, QStringList &folded,
                    QHash<QString, int> &aliases) {
         const QString kind = movies ? QStringLiteral("movie") : QStringLiteral("series");
-        out.clear();
-        folded.clear();
-        cats = movies ? m_ownMovieCats : m_ownSeriesCats;
+        cats = movies ? own.movieCats : own.seriesCats;
         QHash<QString, QString> catByName;               // folded name -> category id
         for (const VodParser::Category &c : std::as_const(cats)) catByName.insert(matchKey(c.name), c.id);
         QHash<QString, int> exact, loose;                // "name|year" / "name" -> position in out
@@ -1861,11 +1915,10 @@ void VodService::merge()
         QVector<QVector<SourceRef>> refs;
 
         auto add = [&](const QVector<VodItem> &items, const QStringList &itemFolded, const QVector<VodParser::Category> &itemCats,
-                       int extra) {
+                       int extra, const QString &prefix) {
             QHash<QString, QString> catName, catMap;
             for (const VodParser::Category &c : itemCats) catName.insert(c.id, c.name);
             if (extra >= 0) {
-                const QString prefix = QLatin1Char('@') + m_extras[extra].playlistId + QLatin1Char(':');
                 for (const VodParser::Category &c : itemCats) {
                     const QString k = matchKey(c.name);
                     QString id = catByName.value(k);
@@ -1891,7 +1944,7 @@ void VodService::merge()
                     }
                 }
                 const SourceRef ref{extra, src.id, qualityOf(src.title + QLatin1Char(' ') + catName.value(src.categoryId))};
-                const QString mergedId = extra < 0 ? src.id : QLatin1Char('@') + m_extras[extra].playlistId + QLatin1Char(':') + src.id;
+                const QString mergedId = extra < 0 ? src.id : prefix + src.id;
                 if (at >= 0) {
                     refs[at].append(ref);
                     aliases.insert(mergedId, at);
@@ -1916,26 +1969,15 @@ void VodService::merge()
                 }
             }
         };
-        add(movies ? m_ownMovies : m_ownSeries, movies ? m_ownMovieFolded : m_ownSeriesFolded,
-            movies ? m_ownMovieCats : m_ownSeriesCats, -1);
-        for (int e : std::as_const(loaded)) {
-            const VodService *svc = m_extras[e].svc;
-            add(movies ? svc->m_ownMovies : svc->m_ownSeries, movies ? svc->m_ownMovieFolded : svc->m_ownSeriesFolded,
-                movies ? svc->m_ownMovieCats : svc->m_ownSeriesCats, e);
-        }
+        for (const MergeSource &s : sources)
+            add(movies ? s.movies : s.series, movies ? s.movieFolded : s.seriesFolded,
+                movies ? s.movieCats : s.seriesCats, s.extra, s.prefix);
         for (int i = 0; i < refs.size(); ++i)
-            if (refs[i].size() > 1) { m_sourcesOf.insert(kind + QLatin1Char(':') + out[i].id, refs[i]); ++shared; }
+            if (refs[i].size() > 1) { m.sourcesOf.insert(kind + QLatin1Char(':') + out[i].id, refs[i]); ++m.shared; }
     };
-    QHash<QString, int> movieAliases, seriesAliases;
-    one(true, m_movies, m_movieCats, m_movieFolded, movieAliases);
-    one(false, m_series, m_seriesCats, m_seriesFolded, seriesAliases);
-    index();
-    // Another source's id (Continue watching from before, a favorite) finds the title.
-    for (auto it = movieAliases.constBegin(); it != movieAliases.constEnd(); ++it) if (!m_movieIndex.contains(it.key())) m_movieIndex.insert(it.key(), it.value());
-    for (auto it = seriesAliases.constBegin(); it != seriesAliases.constEnd(); ++it) if (!m_seriesIndex.contains(it.key())) m_seriesIndex.insert(it.key(), it.value());
-    if (!loaded.isEmpty() || shared > 0)
-        qInfo().noquote() << QStringLiteral("VOD: %1 movies and %2 series from %3 playlists, %4 titles on more than one source")
-                                 .arg(m_movies.size()).arg(m_series.size()).arg(loaded.size() + 1).arg(shared);
+    one(true, m.movies, m.movieCats, m.movieFolded, m.movieAliases);
+    one(false, m.series, m.seriesCats, m.seriesFolded, m.seriesAliases);
+    return m;
 }
 
 int VodService::bestSource(const QVector<SourceRef> &refs) const

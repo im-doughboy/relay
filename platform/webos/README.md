@@ -165,6 +165,11 @@ computer's, so on the TV:
   also fetches the next few posters before their cards exist.
 - Moving through the channel groups switches the channel list once the
   remote stops (0.3 seconds).
+- Several playlists' catalogues are combined in the background
+  (`VodService::combined`), and only once this playlist's own titles are
+  in: 51,000 titles took 11 seconds on the TV and froze the screen for 13
+  to 15 while it happened on the main thread. This playlist's titles show
+  meanwhile.
 
 Finding problems. In `/media/developer/temp/relay`:
 
@@ -174,7 +179,11 @@ Finding problems. In `/media/developer/temp/relay`:
 - `crash.log`: a crash's address and thread, the calls on its stack, and
   where everything was loaded.
 - `freeze.log`: where the main thread was whenever it stopped answering for
-  more than 1.5 seconds (`app/TvWatchdog.cpp`).
+  more than 1.5 seconds (`app/TvWatchdog.cpp`). Each sample has the pc and
+  lr, words from the stack that point into Relay (some stale), and after
+  `bt:` the real calls from the unwind tables. Addresses above Relay's own
+  code are in the TV's libraries: look them up in `/proc/<pid>/maps` of the
+  same run.
 - `profile.log`: a sample of the main thread every 10 ms while a file named
   `profile-on` exists there (create it, use Relay, remove it).
 

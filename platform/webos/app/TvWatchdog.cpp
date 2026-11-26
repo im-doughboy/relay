@@ -19,6 +19,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <thread>
@@ -56,7 +57,18 @@ void onSample(int, siginfo_t *, void *context)
     snprintf(line, sizeof line, "sample: pc %08lx lr %08lx r7 %lu stack:", static_cast<unsigned long>(uc->uc_mcontext.arm_pc),
              static_cast<unsigned long>(uc->uc_mcontext.arm_lr), static_cast<unsigned long>(uc->uc_mcontext.arm_r7));
     writeTo(fd, line);
-    if (fd >= 0) tvWriteStackWords(fd, g_stack, uc->uc_mcontext.arm_sp, 40);
+    // 64 KB: some calls keep more than 8 KB on the stack themselves (PCRE2's
+    // compiler does), which hid who called them.
+    if (fd >= 0) tvWriteStackWords(fd, g_stack, uc->uc_mcontext.arm_sp, 64, 65536);
+    // The real calls, from the unwind tables (the words above can be stale).
+    void *frames[48];
+    const int n = backtrace(frames, 48);
+    writeTo(fd, " bt:");
+    for (int i = 0; i < n; ++i) {
+        char text[16];
+        snprintf(text, sizeof text, " %08lx", reinterpret_cast<unsigned long>(frames[i]));
+        writeTo(fd, text);
+    }
     writeTo(fd, "\n");
 }
 
@@ -139,6 +151,10 @@ void startWatchdog()
     unlink(g_profileFlag);   // never left on from an earlier run
     g_mainTid = pid_t(syscall(SYS_gettid));   // this runs on the main thread
     g_stack.open();
+    {   // backtrace() loads its unwinder on first use: not inside a signal
+        void *warm[4];
+        backtrace(warm, 4);
+    }
     struct sigaction sa{};
     sa.sa_sigaction = onSample;
     sa.sa_flags = SA_SIGINFO | SA_RESTART;

@@ -748,7 +748,7 @@ private slots:
             "#EXTINF:-1 group-title=\"Shows\",Show S01 E02\nhttp://one/series/u/p/12.mp4\n"));
         vod.ensureLoaded();
         QTRY_VERIFY(vod.loaded());
-        QCOMPARE(vod.movieCount(), 2);                         // Beta once
+        QTRY_COMPARE(vod.movieCount(), 2);                     // Beta once (combined in the background)
         // Another playlist: Alpha in 4K, Delta, and the show with a third episode.
         vod.addExtraSource("p2", "Other", M3uParser::parse(
             "#EXTM3U\n#EXTINF:-1,Live\nhttp://h2/live/u/p/1.ts\n"

@@ -280,7 +280,30 @@ private:
     QString m_ownId, m_ownName;
     std::function<bool(const QString &)> m_busy;
     QTimer *m_mergeTimer = nullptr;
-    void merge();
+    // Shows the titles as they are now; false when the combined ones are
+    // still being made in the background (they replace these when ready).
+    bool merge();
+    // merge()'s work, off the main thread (it took 15 s on a TV for 40,000
+    // titles): each playlist's own lists in, the combined lists out.
+    struct MergeSource {
+        int extra = -1;                // -1: this playlist
+        QString prefix;                // "@<playlist id>:" for another playlist's ids
+        QVector<VodItem> movies, series;
+        QVector<VodParser::Category> movieCats, seriesCats;
+        QStringList movieFolded, seriesFolded;
+    };
+    struct Merged {
+        QVector<VodItem> movies, series;
+        QVector<VodParser::Category> movieCats, seriesCats;
+        QStringList movieFolded, seriesFolded;
+        QHash<QString, QVector<SourceRef>> sourcesOf;
+        QHash<QString, int> movieAliases, seriesAliases;
+        int shared = 0;
+    };
+    static Merged combined(const QVector<MergeSource> &sources);
+    void indexTitles();
+    quint64 m_mergeGeneration = 0;     // a background merge started before the latest is dropped
+    bool m_fillAfterMerge = false;     // posters and Trakt marks wait for the combined lists
     VodService *serviceOf(const SourceRef &r) { return r.extra < 0 ? this : m_extras.value(r.extra).svc; }
     QString playlistOf(const SourceRef &r) const { return r.extra < 0 ? m_ownId : m_extras.value(r.extra).playlistId; }
     QString nameOf(const SourceRef &r) const { return r.extra < 0 ? m_ownName : m_extras.value(r.extra).name; }
