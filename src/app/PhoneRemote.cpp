@@ -36,10 +36,53 @@ bool PhoneRemote::enabled() const { return QSettings().value(QStringLiteral("pho
 
 void PhoneRemote::setEnabled(bool on)
 {
-    if (on == enabled() && on == running()) return;
+    if (on == enabled() && wanted() == running()) return;
     QSettings().setValue(QStringLiteral("phone/enabled"), on);
-    if (on) start(); else stop();
+    if (wanted()) start(); else stop();
     emit changed();
+}
+
+void PhoneRemote::setSetup(bool on)
+{
+    if (on == m_setup) return;
+    m_setup = on;
+    if (!m_setupTimer) {
+        m_setupTimer = new QTimer(this);
+        m_setupTimer->setInterval(m_setupLifetimeMs);
+        connect(m_setupTimer, &QTimer::timeout, this, [this] { newSetupKey(); emit changed(); });
+    }
+    if (on) {
+        newSetupKey();
+        qInfo().noquote() << "Phone remote: setup from the phone is on";
+        start();
+    } else {
+        m_setupTimer->stop();
+        m_setupKey.clear();
+        qInfo().noquote() << "Phone remote: setup from the phone is off";
+        if (!wanted()) stop();
+    }
+    emit changed();
+}
+
+void PhoneRemote::setSetupKeyLifetime(int ms)
+{
+    m_setupLifetimeMs = ms;
+    if (m_setupTimer) m_setupTimer->setInterval(ms);
+}
+
+void PhoneRemote::newSetupKey()
+{
+    QByteArray fresh(12, Qt::Uninitialized);
+    QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(fresh.data()), fresh.size() / 4);
+    m_setupKey = fresh.toHex();
+    if (m_setupTimer) m_setupTimer->start();   // 15 minutes from now
+}
+
+// The key goes after # : a browser never sends that part to a server.
+QString PhoneRemote::setupUrl() const
+{
+    const QString base = url();
+    return m_setup && !base.isEmpty() && !m_setupKey.isEmpty() ? base + QStringLiteral("/#k=") + QString::fromLatin1(m_setupKey) : QString();
 }
 
 bool PhoneRemote::running() const { return m_server && m_server->isListening(); }
@@ -175,7 +218,7 @@ void PhoneRemote::start()
     auto *retry = new QTimer(this);
     retry->setInterval(500);
     connect(retry, &QTimer::timeout, this, [this, retry] {
-        if (running() || !enabled()) { retry->deleteLater(); return; }
+        if (running() || !wanted()) { retry->deleteLater(); return; }
         if (m_server->listen(QHostAddress::Any, kFirstPort) || ++m_portTries >= 16) {
             retry->deleteLater();
             if (!running()) {
@@ -245,8 +288,12 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
     if (method == "POST" && path == QLatin1String("/pair")) {
         const QDateTime now = QDateTime::currentDateTimeUtc();
         if (m_lockedUntil.isValid() && now < m_lockedUntil) { reply(socket, 429, "text/plain", "Too many wrong codes. Wait a minute."); return; }
-        const QString given = QJsonDocument::fromJson(body).object().value(QLatin1String("code")).toString().trimmed();
-        if (given.isEmpty() || given != code()) {
+        const QJsonObject asked = QJsonDocument::fromJson(body).object();
+        const QString given = asked.value(QLatin1String("code")).toString().trimmed();
+        const QByteArray key = asked.value(QLatin1String("key")).toString().toLatin1();
+        // The QR code's one-time key (setup), or the code Relay shows.
+        const bool byKey = !key.isEmpty() && !m_setupKey.isEmpty() && key == m_setupKey;
+        if (!byKey && (given.isEmpty() || given != code())) {
             if (++m_wrongCodes >= kMaxWrongCodes) {
                 // Too many guesses: wait, and a new code.
                 m_wrongCodes = 0;
@@ -259,6 +306,7 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
             return;
         }
         m_wrongCodes = 0;
+        if (byKey) newSetupKey();   // once only: the next phone gets a new QR code
         QByteArray fresh(24, Qt::Uninitialized);
         QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(fresh.data()), fresh.size() / 4);
         const QByteArray newToken = fresh.toHex();
@@ -266,7 +314,7 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
         QStringList pairedList = s.value(QStringLiteral("phone/paired")).toStringList();
         pairedList << QString::fromLatin1(hashOf(newToken));
         s.setValue(QStringLiteral("phone/paired"), pairedList);
-        qInfo().noquote() << "Phone remote: paired a phone at" << socket->peerAddress().toString();
+        qInfo().noquote() << "Phone remote: paired a phone at" << socket->peerAddress().toString() << (byKey ? "(setup QR code)" : "");
         emit changed();
         emit phonePaired();
         reply(socket, 200, "application/json", QJsonDocument(QJsonObject{{QStringLiteral("token"), QString::fromLatin1(newToken)}}).toJson(QJsonDocument::Compact));

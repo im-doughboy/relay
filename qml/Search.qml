@@ -123,6 +123,7 @@ FocusScope {
 
             TextField {
                 id: field
+                property bool tvKeyboardOnFocus: true   // the TV's keyboard opens with it (other fields: on OK)
                 x: 20; y: 16
                 width: parent.width - 40
                 height: 46

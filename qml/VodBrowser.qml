@@ -328,6 +328,7 @@ FocusScope {
 
             TextField {
                 id: searchField
+                property bool tvKeyboardOnFocus: true   // the TV's keyboard opens with it (other fields: on OK)
                 width: Math.max(96, Math.min(360, root.width * 0.26,
                                              headerRight.room - (root.browsing || headerRight.noSort ? 0
                                                                  : (headerRight.compactSort ? 44 : sortFull.width + 32) + headerRight.spacing)))

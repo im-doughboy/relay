@@ -39,6 +39,15 @@ bool g_onScreen = true;
 // before SDL had read the TV's answers, and LG's SDL crashed in Wayland.
 int g_textWanted = -1;
 
+// The object (by default the focused one) takes typed text: a text field.
+bool takesText(QObject *object = QGuiApplication::focusObject())
+{
+    if (!object) return false;
+    QInputMethodQueryEvent q(Qt::ImEnabled);
+    QCoreApplication::sendEvent(object, &q);
+    return q.value(Qt::ImEnabled).toBool();
+}
+
 QRect screenRect() { return QRect(QPoint(), g_size); }
 
 // How responsive the screen is, for the log: how long a button press takes
@@ -343,6 +352,19 @@ private:
                 }
                 if (!key) break;
                 if (!w) break;
+                // OK on a text field opens the TV's keyboard (focus alone
+                // doesn't: it covered the screen, the phone setup's QR code
+                // included, and a phone types into the field without it).
+                // That OK goes no further, so it doesn't submit the form.
+                if (key == Qt::Key_Return) {
+                    if (e.type == SDL_KEYDOWN && !e.key.repeat && !SDL_IsTextInputActive() && takesText()) {
+                        g_textWanted = 1;
+                        m_okOpenedKeyboard = true;
+                        break;
+                    }
+                    if (e.type == SDL_KEYUP && m_okOpenedKeyboard) { m_okOpenedKeyboard = false; break; }
+                    if (m_okOpenedKeyboard) break;   // its repeats
+                }
                 // From here until its frame is on screen (OK acts when it comes up).
                 if (g_resp.keyAt < 0 && (key == Qt::Key_Return ? e.type == SDL_KEYUP : e.type == SDL_KEYDOWN)) {
                     g_resp.keyAt = g_resp.now();
@@ -440,6 +462,7 @@ private:
     QPointF m_pointer;
     Qt::MouseButtons m_buttons;
     QSet<int> m_seen;
+    bool m_okOpenedKeyboard = false;   // until that OK's release
     QSet<int> m_seenWindowEvents;
 };
 
@@ -479,22 +502,26 @@ public:
     bool isExposed() const override { return window()->isVisible() && g_onScreen; }
 };
 
-// A text field with focus turns on SDL's text input (and the TV's keyboard).
+// SDL's text input (and the TV's keyboard): on with OK on a text field (or as
+// a Search field takes focus), off when focus leaves text fields.
 class QSdlInputContext : public QPlatformInputContext
 {
 public:
     bool isValid() const override { return true; }
     void setFocusObject(QObject *object) override
     {
-        bool wants = false;
-        if (object) {
-            QInputMethodQueryEvent q(Qt::ImEnabled);
-            QCoreApplication::sendEvent(object, &q);
-            wants = q.value(Qt::ImEnabled).toBool();
-        }
-        g_textWanted = wants ? 1 : 0;
+        // Leaving text fields closes the keyboard; reaching one doesn't open
+        // it (OK does; see showInputPanel).
+        if (!takesText(object)) g_textWanted = 0;
     }
-    void showInputPanel() override { g_textWanted = 1; }
+    // Qt asks for the keyboard as a text field takes focus; on the TV only a
+    // field that says so gets it then (tvKeyboardOnFocus: Search). The others
+    // wait for OK.
+    void showInputPanel() override
+    {
+        QObject *object = QGuiApplication::focusObject();
+        if (object && object->property("tvKeyboardOnFocus").toBool()) g_textWanted = 1;
+    }
     void hideInputPanel() override { g_textWanted = 0; }
     bool isInputPanelVisible() const override { return g_textWanted >= 0 ? g_textWanted == 1 : bool(SDL_IsTextInputActive()); }
 };

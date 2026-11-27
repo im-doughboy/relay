@@ -81,6 +81,13 @@ FocusScope {
     ]
     property string section: "playlist"
     readonly property bool sidebar: Settings.hasSource && !newPlaylist
+    // Before the first playlist: set up from a phone (ROADMAP 0.6). The phone's
+    // page runs while this screen shows, and stops once a playlist is saved
+    // (unless the phone remote is on in Settings).
+    readonly property bool phoneSetup: !Settings.hasSource
+    readonly property real phonePanelWidth: 300
+    readonly property bool phoneBeside: phoneSetup && scroller.width >= 560 + 48 + phonePanelWidth + 64
+    Binding { target: Phone; property: "setup"; value: root.visible && root.phoneSetup }
     readonly property string shown: sidebar ? section : "playlist"
     function showSection(id) {
         if (section === id) return
@@ -320,7 +327,8 @@ FocusScope {
         id: card
         // Beside the section list (once there's a playlist), centred alone before.
         readonly property real leftEdge: root.sidebar ? sidePanel.width + 24 : 0
-        x: leftEdge + (scroller.width - leftEdge - width) / 2
+        x: root.phoneBeside ? (scroller.width - width - 48 - root.phonePanelWidth) / 2
+                            : leftEdge + (scroller.width - leftEdge - width) / 2
         y: root.sidebar ? 32 : Math.max(32, (scroller.height - implicitHeight) / 2)
         width: Math.min(root.sidebar ? 640 : 560, root.width - leftEdge - 64)
         spacing: 28
@@ -355,11 +363,17 @@ FocusScope {
             }
         }
 
+        // Set up from the phone, above the form when the window is narrow.
+        PhoneSetup {
+            visible: root.phoneSetup && !root.phoneBeside
+            width: card.width
+        }
+
         // On a TV, typing a playlist address with the remote is slow: the
         // phone remote comes first, and its page types into the field. Before
-        // the first playlist it's already on, with its code showing.
+        // the first playlist it's turned on (and PhoneSetup shows its code).
         Column {
-            visible: Settings.tv && (!Settings.hasSource || root.newPlaylist)
+            visible: Settings.tv && root.newPlaylist
             width: card.width
             spacing: 10
             Component.onCompleted: if (Settings.tv && !Settings.hasSource && !Phone.enabled) Phone.enabled = true
@@ -1535,6 +1549,14 @@ FocusScope {
         }
     }
 
+
+    // Set up from the phone, beside the form when there's room.
+    PhoneSetup {
+        visible: root.phoneBeside
+        x: card.x + card.width + 48
+        y: Math.max(card.y, 32)
+        width: root.phonePanelWidth
+    }
     }   // Flickable
 
     // ---- The section list ------------------------------------------------------------

@@ -2744,6 +2744,59 @@ private slots:
         QSettings().remove("phone");
     }
 
+    // Setup from the phone: the page runs with the phone remote off, and the
+    // QR code's key pairs one phone, once, while it's fresh.
+    void phone_setup()
+    {
+        QSettings().remove("phone");
+        RemoteInput remote;
+        PhoneRemote phone(&remote);
+        QVERIFY(!phone.running());
+        QVERIFY(phone.setupUrl().isEmpty());
+        phone.setSetup(true);
+        QVERIFY(!phone.enabled());                                 // the phone remote stays off in Settings
+        QTRY_VERIFY_WITH_TIMEOUT(phone.running(), 12000);
+        const QString key = phone.setupKey();
+        QCOMPARE(key.size(), 24);
+        if (!phone.url().isEmpty()) QCOMPARE(phone.setupUrl(), phone.url() + "/#k=" + key);
+        const QString base = QStringLiteral("http://127.0.0.1:%1").arg(phone.port());
+        QNetworkAccessManager net;
+        auto pair = [&](const QJsonObject &body) {
+            QNetworkRequest req{QUrl(base + "/pair")};
+            req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            QNetworkReply *r = net.post(req, QJsonDocument(body).toJson());
+            QSignalSpy done(r, &QNetworkReply::finished);
+            done.wait(5000);
+            r->deleteLater();
+            return qMakePair(r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), r->readAll());
+        };
+        QCOMPARE(pair({{"key", "0123456789abcdef01234567"}}).first, 403);   // not this key
+        auto ok = pair({{"key", key}});
+        QCOMPARE(ok.first, 200);
+        QVERIFY(QJsonDocument::fromJson(ok.second).object().value("token").toString().size() >= 32);
+        QCOMPARE(phone.paired(), 1);
+        QVERIFY(phone.setupKey() != key);                          // a new QR code for the next phone
+        QCOMPARE(pair({{"key", key}}).first, 403);                 // used
+        // Too old: replaced after its lifetime.
+        phone.setSetupKeyLifetime(200);
+        QVERIFY(pair({{"key", phone.setupKey()}}).first == 200);   // (this one restarts the clock)
+        const QString aging = phone.setupKey();
+        QTRY_VERIFY_WITH_TIMEOUT(phone.setupKey() != aging, 2000);
+        QCOMPARE(pair({{"key", aging}}).first, 403);
+        // Setup ends (a playlist was added): the page stops, unless the phone remote is on.
+        phone.setSetup(false);
+        QVERIFY(!phone.running());
+        QVERIFY(phone.setupUrl().isEmpty());
+        phone.setEnabled(true);
+        QTRY_VERIFY_WITH_TIMEOUT(phone.running(), 12000);
+        phone.setSetup(true);
+        phone.setSetup(false);
+        QVERIFY(phone.running());
+        phone.setEnabled(false);
+        QVERIFY(!phone.running());
+        QSettings().remove("phone");
+    }
+
     // The browse home's rows, and trailers.
     void vod_browse_and_trailers()
     {

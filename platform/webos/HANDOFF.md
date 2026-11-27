@@ -42,6 +42,22 @@ Still open:
 - Switching to another source automatically is ROADMAP 0.7 ("Switch to a working copy", movies
   and episodes across playlists, decided). Not before 0.6.
 
+## 0.6 (set up from your phone): where it stands
+
+Step 1 is done: before the first playlist, the first screen shows `PhoneSetup` (QR code, the
+address and code for a computer) beside the form, or above it in a narrow window. `Phone.setup`
+runs the phone page even with the phone remote off; `setupUrl` carries a one-time key after `#k=`
+(never sent to a server), replaced once used and every 15 minutes. The page pairs with it and
+drops it from the address. Setup turns off once a playlist is saved (a `Binding` in
+`SetupScreen.qml`). Checked on the TV with its settings folder set aside and put back
+(`relay/config`), the browser pane standing in for the phone. Not seen on Windows yet: Relay
+can't run here without the owner's settings.
+
+On the TV the keyboard now opens on OK in a text field (`qpa-sdl`), not on focus: it covered the
+QR code. A field with `tvKeyboardOnFocus: true` (the two Search fields) still opens it at once.
+
+Next: step 2, the phone page opens on **Add a provider** (kind, name, login).
+
 ## Where things are
 
 The webOS build lives in WSL (`Ubuntu-24.04`) under `/opt/relay-webos`:

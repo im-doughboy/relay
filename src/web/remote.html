@@ -250,7 +250,21 @@
     b.addEventListener("contextmenu", (e) => e.preventDefault());
   });
 
-  state();
+  // Opened from Relay's setup QR code: its one-time key pairs this phone.
+  // The key leaves the address bar and history at once.
+  async function pairFromQr() {
+    const key = (/(?:^#|&)k=([0-9a-f]+)/.exec(location.hash) || [])[1];
+    if (!key) return;
+    try { history.replaceState(null, "", location.pathname); } catch (e) {}
+    try {
+      const r = await fetch("/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+      if (!r.ok) { $("err").textContent = "That QR code was used already or is too old. Scan the one on the screen now, or enter the code."; return; }
+      token = (await r.json()).token;
+      try { localStorage.setItem(KEY, token); } catch (e) {}
+    } catch (e) { $("err").textContent = "Can't reach Relay."; }
+  }
+
+  pairFromQr().then(state);
   setInterval(() => { if (!document.hidden) state(); }, 2000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) state(); });
 })();

@@ -9,6 +9,7 @@
 #include <QVariantMap>
 
 class QTcpServer;
+class QTimer;
 class QTcpSocket;
 class RemoteInput;
 
@@ -28,6 +29,11 @@ class PhoneRemote : public QObject
     Q_PROPERTY(QString code READ code NOTIFY changed)            // the pairing code
     Q_PROPERTY(int paired READ paired NOTIFY changed)
     Q_PROPERTY(QString nowShowing READ nowShowing WRITE setNowShowing NOTIFY nowShowingChanged)
+    // Setup from the phone (before the first playlist): the page runs even with
+    // the phone remote off, and setupUrl carries a one-time key that pairs the
+    // phone that opens it, used once or for 15 minutes, then replaced.
+    Q_PROPERTY(bool setup READ setup WRITE setSetup NOTIFY changed)
+    Q_PROPERTY(QString setupUrl READ setupUrl NOTIFY changed)
 
 public:
     explicit PhoneRemote(RemoteInput *remote, QObject *parent = nullptr);
@@ -42,6 +48,12 @@ public:
     int paired() const;
     QString nowShowing() const { return m_nowShowing; }
     void setNowShowing(const QString &text);
+    bool setup() const { return m_setup; }
+    void setSetup(bool on);
+    QString setupUrl() const;
+    QString setupKey() const { return QString::fromLatin1(m_setupKey); }   // in setupUrl after #k=
+    // How long a setup key lasts (15 minutes; tests use less).
+    void setSetupKeyLifetime(int ms);
 
     Q_INVOKABLE void forgetPhones();
     // A QR code for `text`: {size, modules} with modules a string of '1'/'0', row by row.
@@ -67,6 +79,12 @@ private:
     QSet<QString> m_noted;
     int m_portTries = 0;
     void newCode();
+    void newSetupKey();
+    bool wanted() const { return enabled() || m_setup; }   // the server runs for either
+    bool m_setup = false;
+    QByteArray m_setupKey;
+    QTimer *m_setupTimer = nullptr;
+    int m_setupLifetimeMs = 15 * 60 * 1000;
 
     RemoteInput *m_remote;
     QTcpServer *m_server = nullptr;
