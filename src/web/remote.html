@@ -65,6 +65,15 @@
   .error { color: var(--danger); min-height: 1.3em; font-size: 14px; }
   .hidden { display: none !important; }
   .status { text-align: center; color: var(--muted); font-size: 13px; min-height: 1.2em; }
+  /* Add a provider (setup) */
+  #provider h1 { font-size: 20px; }
+  #provider label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  #provider .field { font: 17px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: normal;
+    text-align: left; padding: 12px 14px; user-select: text; -webkit-user-select: text; }
+  #provider .fields { display: flex; flex-direction: column; gap: 12px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg button { min-height: 44px; font-size: 14px; padding: 0 6px; }
+  .seg button.on { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 650; }
 </style>
 </head>
 <body>
@@ -84,6 +93,32 @@
   </section>
 
   <section id="remote" class="hidden" style="display:flex;flex-direction:column;gap:14px">
+    <section class="card hidden" id="provider">
+      <h1>Add a provider</h1>
+      <p>Relay adds it and loads the channels. The login stays in Relay: it isn't shown here again.</p>
+      <div class="seg">
+        <button type="button" data-kind="xtream">Xtream Codes</button>
+        <button type="button" data-kind="m3u">M3U link</button>
+        <button type="button" data-kind="portal">Portal (MAC)</button>
+      </div>
+      <form id="providerForm" class="fields" autocomplete="off" novalidate>
+        <label>Name (optional)<input class="field" id="pName" placeholder="e.g. Main provider" autocapitalize="words"></label>
+        <div class="fields" data-for="xtream">
+          <label>Server<input class="field" id="pServer" inputmode="url" placeholder="http://provider.example:8080" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <label>Username<input class="field" id="pUser" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <label>Password<input class="field" id="pPass" type="password" autocomplete="new-password"></label>
+        </div>
+        <div class="fields hidden" data-for="m3u">
+          <label>Playlist link<input class="field" id="pLink" inputmode="url" placeholder="http://provider.example/get.php?..." autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        </div>
+        <div class="fields hidden" data-for="portal">
+          <label>Portal address<input class="field" id="pPortal" inputmode="url" placeholder="http://portal.example/c/" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <label>MAC address<input class="field" id="pMac" placeholder="00:1A:79:00:00:00" autocapitalize="characters" autocorrect="off" spellcheck="false"></label>
+        </div>
+        <div class="error" id="pErr"></div>
+        <button type="submit" class="accent" id="pAdd">Add to Relay</button>
+      </form>
+    </section>
     <section class="card hidden" id="typing">
       <label for="text" id="textHint">Type in Relay</label>
       <form id="textForm" autocomplete="off">
@@ -188,7 +223,8 @@
       show(s.paired);
       $("now").textContent = s.paired ? (s.now || "") : "";
       showField(s.paired ? s.field : null);
-      status("");
+      status(note);
+      showSetup(s);
     } catch (e) { status("Can't reach Relay. Is it open on the computer?"); }
   }
 
@@ -250,6 +286,45 @@
     b.addEventListener("contextmenu", (e) => e.preventDefault());
   });
 
+  // Add a provider (while Relay waits for its first playlist).
+  let kind = "xtream", sent = false, note = "";
+  function setKind(k) {
+    kind = k;
+    document.querySelectorAll("[data-kind]").forEach((b) => b.classList.toggle("on", b.dataset.kind === k));
+    document.querySelectorAll("[data-for]").forEach((d) => d.classList.toggle("hidden", d.dataset.for !== k));
+    $("pErr").textContent = "";
+  }
+  document.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => setKind(b.dataset.kind)));
+  setKind(kind);
+  function showSetup(s) {
+    const on = !!(s && s.paired && s.setup);
+    $("provider").classList.toggle("hidden", !on);
+    if (on) $("typing").classList.add("hidden");   // the form takes the typing
+    if (!on && sent && s && s.paired) { sent = false; note = "Added. Relay is loading the channels."; status(note); }
+    if (!on) return;
+    const busy = s.setupStatus === "busy";
+    $("pAdd").disabled = busy;
+    $("pAdd").textContent = busy ? "Adding it…" : "Add to Relay";
+    if (sent && s.setupStatus === "failed") $("pErr").textContent = "It didn't load. Relay's screen says why: check the details and try again.";
+  }
+  $("providerForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const v = (id) => $(id).value.trim();
+    const body = { kind, name: v("pName"), server: v("pServer"), user: v("pUser"), pass: $("pPass").value,
+                   link: v("pLink"), portal: v("pPortal"), mac: v("pMac") };
+    const need = kind === "xtream" ? ["server", "user", "pass"] : kind === "m3u" ? ["link"] : ["portal", "mac"];
+    if (need.some((k) => !body[k])) { $("pErr").textContent = "Fill in every box."; return; }
+    $("pErr").textContent = "";
+    try {
+      const r = await fetch("/setup/provider", { method: "POST", headers: { "X-Relay-Token": token, "Content-Type": "application/json" },
+                                                 body: JSON.stringify(body) });
+      if (!r.ok) { $("pErr").textContent = await r.text(); return; }
+      sent = true;
+      $("pPass").value = "";
+      state();
+    } catch (err) { $("pErr").textContent = "Can't reach Relay."; }
+  });
+
   // Opened from Relay's setup QR code: its one-time key pairs this phone.
   // The key leaves the address bar and history at once.
   async function pairFromQr() {
@@ -265,6 +340,8 @@
   }
 
   pairFromQr().then(state);
+  // Scanned again with the page already open: only the part after # changes.
+  window.addEventListener("hashchange", () => pairFromQr().then(state));
   setInterval(() => { if (!document.hidden) state(); }, 2000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) state(); });
 })();

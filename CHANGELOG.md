@@ -6,10 +6,11 @@ under **What's new** when it offers the update. Write it for the people using Re
 ## 0.6.0
 
 - **Set up from your phone:** before your first playlist, Relay shows a QR code beside the form.
-  Scan it with your phone's camera and Relay's page opens on the phone, already paired: type the
-  playlist's address or login there and it goes into Relay. On a computer, open the address shown
-  and enter the code. The QR code pairs one phone, changes every 15 minutes, and only works on
-  your home network.
+  Scan it with your phone's camera and Relay's page opens on the phone, already paired, on
+  **Add a provider**: choose Xtream Codes, M3U link or Portal (MAC), fill in the login, and Relay
+  adds it. The phone says when it's added, or when it didn't load (Relay's screen says why). On a
+  computer, open the address shown and enter the code. The QR code pairs one phone, changes every
+  15 minutes, and only works on your home network.
 - **On the LG TV, the keyboard opens when you press OK** in a text box instead of as soon as one
   is selected, so it no longer covers the screen. Search still opens it straight away.
 

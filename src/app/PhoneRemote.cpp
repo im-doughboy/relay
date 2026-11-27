@@ -64,6 +64,28 @@ void PhoneRemote::setSetup(bool on)
     emit changed();
 }
 
+void PhoneRemote::setSetupStatus(const QString &status)
+{
+    if (status == m_setupStatus) return;
+    m_setupStatus = status;
+    emit changed();
+}
+
+QString PhoneRemote::checkProvider(const QVariantMap &p)
+{
+    const QString kind = p.value(QStringLiteral("kind")).toString();
+    const QStringList need = kind == QLatin1String("xtream") ? QStringList{QStringLiteral("server"), QStringLiteral("user"), QStringLiteral("pass")}
+                           : kind == QLatin1String("m3u") ? QStringList{QStringLiteral("link")}
+                           : kind == QLatin1String("portal") ? QStringList{QStringLiteral("portal"), QStringLiteral("mac")}
+                           : QStringList();
+    if (need.isEmpty()) return QStringLiteral("Choose Xtream Codes, M3U link or Portal (MAC).");
+    for (auto it = p.constBegin(); it != p.constEnd(); ++it)
+        if (it.value().toString().size() > 2048) return QStringLiteral("That's too long.");
+    for (const QString &k : need)
+        if (p.value(k).toString().trimmed().isEmpty()) return QStringLiteral("Fill in every box.");
+    return QString();
+}
+
 void PhoneRemote::setSetupKeyLifetime(int ms)
 {
     m_setupLifetimeMs = ms;
@@ -280,6 +302,8 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
         QJsonObject o{{QStringLiteral("paired"), ok}};
         if (ok) {
             o.insert(QStringLiteral("now"), m_nowShowing);
+            o.insert(QStringLiteral("setup"), m_setup);
+            o.insert(QStringLiteral("setupStatus"), m_setupStatus);
             o.insert(QStringLiteral("field"), QJsonObject::fromVariantMap(RemoteInput::fieldState()));
         }
         reply(socket, 200, "application/json", QJsonDocument(o).toJson(QJsonDocument::Compact));
@@ -327,6 +351,24 @@ void PhoneRemote::onRequest(QTcpSocket *socket, const QByteArray &method, const 
         emit m_remote->used(QStringLiteral("phone"));
         m_remote->trigger(action);
         reply(socket, 204, QByteArray(), QByteArray());
+        return;
+    }
+    // Add a provider (setup): the login goes to Relay and is never sent back or logged.
+    if (method == "POST" && path == QLatin1String("/setup/provider")) {
+        if (!tokenValid(token)) { refused(socket, token); return; }
+        if (!m_setup) { reply(socket, 409, "text/plain", "Relay isn't waiting for a playlist now."); return; }
+        const QJsonObject o = QJsonDocument::fromJson(body).object();
+        QVariantMap p;
+        for (const char *k : {"kind", "name", "server", "user", "pass", "link", "portal", "mac"})
+            p.insert(QLatin1String(k), o.value(QLatin1String(k)).toString());
+        const QString wrong = checkProvider(p);
+        if (!wrong.isEmpty()) { reply(socket, 400, "text/plain", wrong.toUtf8()); return; }
+        qInfo().noquote() << "Phone remote: a provider came from the phone ·" << p.value(QStringLiteral("kind")).toString();
+        emit m_remote->used(QStringLiteral("phone"));
+        m_setupStatus = QStringLiteral("busy");   // until Relay says otherwise
+        emit providerSubmitted(p);
+        reply(socket, 204, QByteArray(), QByteArray());
+        emit changed();
         return;
     }
     if (method == "POST" && path == QLatin1String("/text")) {

@@ -34,6 +34,8 @@ class PhoneRemote : public QObject
     // phone that opens it, used once or for 15 minutes, then replaced.
     Q_PROPERTY(bool setup READ setup WRITE setSetup NOTIFY changed)
     Q_PROPERTY(QString setupUrl READ setupUrl NOTIFY changed)
+    // What the phone shows after sending a provider: "busy", "failed" or "".
+    Q_PROPERTY(QString setupStatus READ setupStatus WRITE setSetupStatus NOTIFY changed)
 
 public:
     explicit PhoneRemote(RemoteInput *remote, QObject *parent = nullptr);
@@ -52,6 +54,11 @@ public:
     void setSetup(bool on);
     QString setupUrl() const;
     QString setupKey() const { return QString::fromLatin1(m_setupKey); }   // in setupUrl after #k=
+    QString setupStatus() const { return m_setupStatus; }
+    void setSetupStatus(const QString &status);
+    // A provider from the phone's Add a provider form, checked: kind (xtream,
+    // m3u, portal), name, and server/user/pass, link, or portal/mac.
+    static QString checkProvider(const QVariantMap &p);   // what's wrong, or empty
     // How long a setup key lasts (15 minutes; tests use less).
     void setSetupKeyLifetime(int ms);
 
@@ -65,6 +72,7 @@ signals:
     void changed();
     void nowShowingChanged();
     void phonePaired();
+    void providerSubmitted(const QVariantMap &provider);
 
 private:
     void start();
@@ -82,6 +90,7 @@ private:
     void newSetupKey();
     bool wanted() const { return enabled() || m_setup; }   // the server runs for either
     bool m_setup = false;
+    QString m_setupStatus;
     QByteArray m_setupKey;
     QTimer *m_setupTimer = nullptr;
     int m_setupLifetimeMs = 15 * 60 * 1000;

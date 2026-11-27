@@ -56,7 +56,14 @@ can't run here without the owner's settings.
 On the TV the keyboard now opens on OK in a text field (`qpa-sdl`), not on focus: it covered the
 QR code. A field with `tvKeyboardOnFocus: true` (the two Search fields) still opens it at once.
 
-Next: step 2, the phone page opens on **Add a provider** (kind, name, login).
+Step 2 is done: while setup is on, a paired phone's page opens on **Add a provider** (kind, name,
+login). `POST /setup/provider` (paired, setup on, checked by `PhoneRemote::checkProvider`) emits
+`providerSubmitted`; `SetupScreen.qml` fills its form and runs `submit()`. The phone hears
+`setupStatus` (busy, failed) in `/state`, never the login. Checked on the TV with a test M3U file
+(settings set aside and put back, the test playlist's folder removed): a missing file shows
+"didn't load" on the phone and the reason on the screen; the real one is added and the phone says so.
+
+Next: step 3, a provider's whole get.php link fills in the server, username and password.
 
 ## Where things are
 

@@ -2777,6 +2777,39 @@ private slots:
         QCOMPARE(phone.paired(), 1);
         QVERIFY(phone.setupKey() != key);                          // a new QR code for the next phone
         QCOMPARE(pair({{"key", key}}).first, 403);                 // used
+        // Add a provider from the phone: paired phones only, checked, and the
+        // login never comes back.
+        const QByteArray token = QJsonDocument::fromJson(ok.second).object().value("token").toString().toLatin1();
+        auto send = [&](const QByteArray &path, const QJsonObject &body, const QByteArray &tok) {
+            QNetworkRequest req{QUrl(base + path)};
+            req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            if (!tok.isEmpty()) req.setRawHeader("X-Relay-Token", tok);
+            QNetworkReply *r = body.isEmpty() ? net.get(req) : net.post(req, QJsonDocument(body).toJson());
+            QSignalSpy done(r, &QNetworkReply::finished);
+            done.wait(5000);
+            r->deleteLater();
+            return qMakePair(r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), r->readAll());
+        };
+        QSignalSpy provided(&phone, &PhoneRemote::providerSubmitted);
+        const QJsonObject xtream{{"kind", "xtream"}, {"name", "Main"}, {"server", "http://p.example:8080"},
+                                 {"user", "viewer"}, {"pass", "s3cret-pass"}};
+        QCOMPARE(send("/setup/provider", xtream, {}).first, 403);                          // not paired
+        QCOMPARE(send("/setup/provider", QJsonObject{{"kind", "ftp"}}, token).first, 400);
+        QCOMPARE(send("/setup/provider", QJsonObject{{"kind", "m3u"}, {"link", " "}}, token).first, 400);
+        QCOMPARE(provided.count(), 0);
+        QCOMPARE(send("/setup/provider", xtream, token).first, 204);
+        QCOMPARE(provided.count(), 1);
+        const QVariantMap got = provided.first().first().toMap();
+        QCOMPARE(got.value("kind").toString(), QString("xtream"));
+        QCOMPARE(got.value("server").toString(), QString("http://p.example:8080"));
+        QCOMPARE(got.value("pass").toString(), QString("s3cret-pass"));
+        QCOMPARE(phone.setupStatus(), QString("busy"));
+        const auto st = send("/state", {}, token);
+        QVERIFY(st.second.contains("\"setup\":true"));
+        QVERIFY(st.second.contains("\"setupStatus\":\"busy\""));
+        QVERIFY(!st.second.contains("s3cret-pass") && !st.second.contains("viewer"));
+        QVERIFY(PhoneRemote::checkProvider({{"kind", "portal"}, {"portal", "http://x/c/"}, {"mac", "00:1A:79:00:00:01"}}).isEmpty());
+        QVERIFY(!PhoneRemote::checkProvider({{"kind", "m3u"}, {"link", QString(3000, 'x')}}).isEmpty());
         // Too old: replaced after its lifetime.
         phone.setSetupKeyLifetime(200);
         QVERIFY(pair({{"key", phone.setupKey()}}).first == 200);   // (this one restarts the clock)
@@ -2787,6 +2820,7 @@ private slots:
         phone.setSetup(false);
         QVERIFY(!phone.running());
         QVERIFY(phone.setupUrl().isEmpty());
+        QVERIFY(!PhoneRemote::checkProvider({{"kind", "xtream"}, {"server", "s"}}).isEmpty());
         phone.setEnabled(true);
         QTRY_VERIFY_WITH_TIMEOUT(phone.running(), 12000);
         phone.setSetup(true);

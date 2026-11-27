@@ -88,6 +88,28 @@ FocusScope {
     readonly property real phonePanelWidth: 300
     readonly property bool phoneBeside: phoneSetup && scroller.width >= 560 + 48 + phonePanelWidth + 64
     Binding { target: Phone; property: "setup"; value: root.visible && root.phoneSetup }
+    // A provider sent from the phone's Add a provider form: into this form,
+    // then Add playlist, as if typed here. The phone hears "busy" while it
+    // loads and "failed" if it doesn't (the reason shows here).
+    property bool phoneSent: false
+    Binding { target: Phone; property: "setupStatus"; value: !root.phoneSent ? "" : Playlists.busy ? "busy" : Session.lastError.length ? "failed" : "busy" }
+    Connections {
+        target: Phone
+        function onProviderSubmitted(p) {
+            if (!root.visible || !root.phoneSetup || Playlists.busy) return
+            root.mode = p.kind === "m3u" ? 0 : p.kind === "portal" ? 2 : 1
+            nameField.text = p.name
+            m3uField.text = p.kind === "m3u" ? p.link : ""
+            serverField.text = p.kind === "xtream" ? p.server : ""
+            userField.text = p.kind === "xtream" ? p.user : ""
+            passField.text = p.kind === "xtream" ? p.pass : ""
+            portalField.text = p.kind === "portal" ? p.portal : ""
+            macField.text = p.kind === "portal" ? p.mac : ""
+            Session.clearError()
+            root.phoneSent = true
+            root.submit()
+        }
+    }
     readonly property string shown: sidebar ? section : "playlist"
     function showSection(id) {
         if (section === id) return
