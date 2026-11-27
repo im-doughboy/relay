@@ -21,7 +21,8 @@ under **What's new** when it offers the update. Write it for the people using Re
 - **Movies and series on the LG TV:** they no longer stop after half a minute with providers that
   cut off the TV's player (error 509). Relay now passes them on to the TV's player itself, and
   plays them directly if that doesn't start. The time shows while they play, and Continue
-  watching picks up where you stopped.
+  watching picks up where you stopped. Opening Search while the movies are still loading no
+  longer closes Relay.
 - **Trakt shows what you're watching** for the whole movie or episode, not just its first ten
   seconds, and adds it to your history once when you finish it.
 - **Casting a movie no longer eats memory:** when a provider sends the movie on to another

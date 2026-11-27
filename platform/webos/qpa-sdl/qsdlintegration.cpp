@@ -32,6 +32,12 @@ SDL_Window *g_window = nullptr;
 SDL_GLContext g_context = nullptr;
 QSize g_size(1920, 1080);
 bool g_onScreen = true;
+// Whether a text field wants the TV's keyboard (1, 0), or -1 for no change.
+// Applied from the event loop, never from Qt's focus calls: the remote's
+// presses that piled up while the main thread was held up (the movie list
+// loading) started, stopped and started SDL's text input back to back,
+// before SDL had read the TV's answers, and LG's SDL crashed in Wayland.
+int g_textWanted = -1;
 
 QRect screenRect() { return QRect(QPoint(), g_size); }
 
@@ -308,6 +314,12 @@ private:
     {
         measure();
         SDL_Event e;
+        if (g_textWanted >= 0) {
+            SDL_PumpEvents();   // SDL reads what the TV has answered so far first
+            const bool on = g_textWanted == 1;
+            g_textWanted = -1;
+            if (on != bool(SDL_IsTextInputActive())) on ? SDL_StartTextInput() : SDL_StopTextInput();
+        }
         while (SDL_PollEvent(&e)) {
             QWindow *w = target();
             switch (e.type) {
@@ -480,12 +492,11 @@ public:
             QCoreApplication::sendEvent(object, &q);
             wants = q.value(Qt::ImEnabled).toBool();
         }
-        if (wants && !SDL_IsTextInputActive()) SDL_StartTextInput();
-        else if (!wants && SDL_IsTextInputActive()) SDL_StopTextInput();
+        g_textWanted = wants ? 1 : 0;
     }
-    void showInputPanel() override { SDL_StartTextInput(); }
-    void hideInputPanel() override { SDL_StopTextInput(); }
-    bool isInputPanelVisible() const override { return SDL_IsTextInputActive(); }
+    void showInputPanel() override { g_textWanted = 1; }
+    void hideInputPanel() override { g_textWanted = 0; }
+    bool isInputPanelVisible() const override { return g_textWanted >= 0 ? g_textWanted == 1 : bool(SDL_IsTextInputActive()); }
 };
 
 class QSdlIntegration : public QPlatformIntegration

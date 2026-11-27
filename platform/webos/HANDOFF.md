@@ -27,13 +27,15 @@ Fixed on the way:
 - The TV showed 0:00 for every movie: the player's `currentTime` is an object (ea9161d).
 - The TV's player reports a failure twice; with a retry waiting, the second report showed the
   error and the source chooser over the retry. Ignored now.
+- Opening Search while the movie list loaded (the main thread held up) crashed Relay in LG's SDL
+  and `libwayland-client`: the remote's presses that piled up started, stopped and started SDL's
+  text input back to back. The platform layer (`qpa-sdl`) now only notes what a text field wants
+  and applies it from its event loop. Crashed on the first try before, not in 30 tries after.
 - The provider sometimes doesn't answer a request at all (47 minutes into a movie, and once on a
   first start). The TV's player gave up after 40 s. The relay now asks again from the first
   address after 10 s, twice at most.
 
 Still open:
-- Opening Search on the TV crashed Relay once (signal 11 in `libwayland-client`, from
-  `QQuickTextInput::focusInEvent`, 26 November 15:54). It worked the time before. Not looked into.
 - One provider answered 404 for an episode its own list has: the file isn't there. Relay moved on
   to the other playlist's copy, which is right.
 - Decided by the owner (26 November): the relay keeps its redirect policy (no https-to-http).
