@@ -29,6 +29,7 @@ under **What's new** when it offers the update. Write it for the people using Re
   server, Relay downloaded it far ahead of the TV or Chromecast playing it. It now keeps pace
   with the player, and asks the provider again when it doesn't answer.
 - **Leaving a movie or an episode** opens its page again.
+- **The source chooser** closes when the movie or episode closes; it used to stay on screen.
 - **Searching Movies & series** looks through all of them, whichever category was open.
 - Big playlists load with about half the memory, and Relay's log hides usernames as well as
   passwords, so it's safer to share.
